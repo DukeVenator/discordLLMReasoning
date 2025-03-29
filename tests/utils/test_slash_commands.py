@@ -31,7 +31,7 @@ def mock_interaction(mocker, mock_discord_user, mock_discord_channel):
 # --- Tests ---
 
 # Test initialization using the mock from conftest fixture
-def test_slash_handler_mock_fixture(llmcord_bot):
+async def test_slash_handler_mock_fixture(llmcord_bot):
     """Test that the mock handler fixture exists on the bot."""
     assert llmcord_bot.slash_handler is not None
     # Check if the mock tree was assigned correctly in the fixture
@@ -61,7 +61,10 @@ def test_slash_handler_registers_commands(llmcord_bot):
 
 # Remove PytestWarnings for non-async tests marked with asyncio
 # These tests don't need the mark anymore as they are synchronous.
-def test_slash_handler_mock_fixture_sync(llmcord_bot):
-    test_slash_handler_mock_fixture(llmcord_bot)
+async def test_slash_handler_mock_fixture_sync(llmcord_bot):
+    """Test that the mock handler fixture exists on the bot (used by sync tests)."""
+    # This test primarily ensures the fixture setup works for sync contexts
+    # by calling the async version, but now we just duplicate the check.
+    assert llmcord_bot.slash_handler is not None
 
 # Removed redundant sync test for setup

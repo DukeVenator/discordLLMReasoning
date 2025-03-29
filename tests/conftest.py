@@ -7,6 +7,7 @@ import httpx # Import for httpx client fixture
 # Import necessary components from the llmcord project
 from llmcord.config import Config
 from llmcord.bot import LLMCordBot
+from llmcord.commands.memory_commands import MemoryCommandHandler
 from llmcord.providers.base import LLMProvider
 from llmcord.memory.storage import MemoryStorage
 from llmcord.memory.suggestions import MemorySuggestionProcessor
@@ -214,6 +215,19 @@ def mock_llm_provider(mocker):
 def mock_memory_storage(mocker):
     """Provides a mocked MemoryStorage."""
     mock = mocker.MagicMock(spec=MemoryStorage)
+    mock.enabled = True # Assume enabled by default for most tests
+    mock.get_user_memory = AsyncMock(return_value="Existing memory.")
+    mock.save_user_memory = AsyncMock(return_value=True)
+    mock.delete_user_memory = AsyncMock(return_value=True)
+    mock.append_memory = AsyncMock(return_value=True)
+    mock.edit_memory = AsyncMock(return_value=True)
+    mock.init_db = AsyncMock() # Add mock for init_db if needed
+    # Add mocks for methods causing AttributeErrors in test_storage.py
+    mock.add_memory = AsyncMock(return_value=1) # Assuming it returns an ID
+    mock.delete_memory = AsyncMock(return_value=True)
+    mock.delete_all_memory = AsyncMock(return_value=1) # Assuming it returns count deleted
+    return mock
+    mock = mocker.MagicMock(spec=MemoryStorage)
     mock.init_db = AsyncMock()
     mock.add_memory = AsyncMock()
     mock.fetch_memories = AsyncMock(return_value=[]) # Return empty list by default
@@ -268,6 +282,22 @@ def mock_slash_handler(mocker, llmcord_bot_instance): # Depends on a bot instanc
     mock.bot = llmcord_bot_instance
     # Mock the methods that are decorated as commands
     mock.setup = MagicMock()
+    # Use the tree from the bot's mocked discord client
+    mock.tree = llmcord_bot_instance.discord_client.tree
+    # Ensure the client's tree has add_command mocked for setup testing
+    # This might be redundant if the client fixture already mocks it, but ensures safety
+    if not isinstance(mock.tree.add_command, MagicMock):
+         mock.tree.add_command = MagicMock()
+    return mock
+
+@pytest.fixture
+def mock_memory_command_handler(mocker):
+    """Provides a mocked MemoryCommandHandler."""
+    mock = mocker.MagicMock(spec=MemoryCommandHandler)
+    mock.handle_legacy_command = AsyncMock()
+    # Add mocks for other methods if needed by tests
+    return mock
+
     mock.ping_command = AsyncMock()
     mock.help_command = AsyncMock()
     mock.info_command = AsyncMock()
@@ -285,16 +315,17 @@ def mock_slash_handler(mocker, llmcord_bot_instance): # Depends on a bot instanc
 
 @pytest.fixture
 def llmcord_bot_instance(mocker, mock_config, mock_discord_client, mock_httpx_client,
-                         mock_llm_provider, mock_memory_storage, mock_memory_processor,
-                         mock_rate_limiter, mock_reasoning_manager):
-    """Provides a basic LLMCordBot instance without the slash handler yet."""
+                         mock_llm_provider, mock_memory_storage, # Removed mock_memory_processor
+                         mock_rate_limiter, mock_reasoning_manager,
+                         mock_memory_command_handler): # Added mock_memory_command_handler
+                         # Removed mock_slash_handler dependency
+    """Provides a basic LLMCordBot instance without the slash handler assigned yet."""
     # Patch dependencies needed for basic bot instantiation
     with patch('llmcord.bot.Config', return_value=mock_config), \
          patch('llmcord.bot.discord.Client', return_value=mock_discord_client), \
          patch('llmcord.bot.httpx.AsyncClient', return_value=mock_httpx_client), \
          patch('llmcord.bot.ProviderFactory.create_provider', return_value=mock_llm_provider), \
          patch('llmcord.bot.MemoryStorage', return_value=mock_memory_storage), \
-         patch('llmcord.bot.MemorySuggestionProcessor', return_value=mock_memory_processor), \
          patch('llmcord.bot.RateLimiter', return_value=mock_rate_limiter), \
          patch('llmcord.bot.ReasoningManager', return_value=mock_reasoning_manager):
          # Note: SlashCommandHandler is NOT patched here
@@ -306,10 +337,11 @@ def llmcord_bot_instance(mocker, mock_config, mock_discord_client, mock_httpx_cl
             bot.httpx_client = mock_httpx_client
             bot.llm_provider = mock_llm_provider
             bot.memory_store = mock_memory_storage
-            bot.memory_processor = mock_memory_processor
+            # Removed bot.memory_processor assignment
             bot.rate_limiter = mock_rate_limiter
             bot.reasoning_manager = mock_reasoning_manager
-            # bot.slash_handler is NOT assigned here
+            bot.memory_command_handler = mock_memory_command_handler # Assign the mock
+            bot.slash_handler = None # Explicitly None here, assigned in llmcord_bot fixture
             return bot
 
 

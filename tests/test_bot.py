@@ -426,7 +426,7 @@ async def test_on_message_memory_command_called(llmcord_bot, mock_discord_messag
     mock_discord_message.reference = None
 
     # Spy on handlers
-    llmcord_bot.handle_memory_command = AsyncMock()
+    # llmcord_bot.handle_memory_command = AsyncMock() # Removed - Use fixture mock
     llmcord_bot.handle_forget_command = AsyncMock()
     llmcord_bot.process_message = AsyncMock()
 
@@ -434,7 +434,7 @@ async def test_on_message_memory_command_called(llmcord_bot, mock_discord_messag
     mock_discord_message.author.bot = False
     await llmcord_bot.on_message(mock_discord_message)
 
-    llmcord_bot.handle_memory_command.assert_called_once_with(mock_discord_message, "some arguments")
+    llmcord_bot.memory_command_handler.handle_legacy_command.assert_called_once_with(mock_discord_message, "some arguments")
     llmcord_bot.handle_forget_command.assert_not_called()
     llmcord_bot.process_message.assert_not_called()
 
@@ -447,7 +447,7 @@ async def test_on_message_memory_command_no_args(llmcord_bot, mock_discord_messa
     mock_discord_message.mentions = []
     mock_discord_message.reference = None
 
-    llmcord_bot.handle_memory_command = AsyncMock()
+    # llmcord_bot.handle_memory_command = AsyncMock() # Removed - Use fixture mock
     llmcord_bot.handle_forget_command = AsyncMock()
     llmcord_bot.process_message = AsyncMock()
 
@@ -455,7 +455,7 @@ async def test_on_message_memory_command_no_args(llmcord_bot, mock_discord_messa
     mock_discord_message.author.bot = False
     await llmcord_bot.on_message(mock_discord_message)
 
-    llmcord_bot.handle_memory_command.assert_called_once_with(mock_discord_message, None)
+    llmcord_bot.memory_command_handler.handle_legacy_command.assert_called_once_with(mock_discord_message, None)
     llmcord_bot.handle_forget_command.assert_not_called()
     llmcord_bot.process_message.assert_not_called()
 
@@ -468,7 +468,7 @@ async def test_on_message_forget_command_called(llmcord_bot, mock_discord_messag
     mock_discord_message.mentions = []
     mock_discord_message.reference = None
 
-    llmcord_bot.handle_memory_command = AsyncMock()
+    # llmcord_bot.handle_memory_command = AsyncMock() # Removed - Use fixture mock
     llmcord_bot.handle_forget_command = AsyncMock()
     llmcord_bot.process_message = AsyncMock()
 
@@ -476,7 +476,7 @@ async def test_on_message_forget_command_called(llmcord_bot, mock_discord_messag
     mock_discord_message.author.bot = False
     await llmcord_bot.on_message(mock_discord_message)
 
-    llmcord_bot.handle_memory_command.assert_not_called()
+    llmcord_bot.memory_command_handler.handle_legacy_command.assert_not_called()
     llmcord_bot.handle_forget_command.assert_called_once_with(mock_discord_message)
     llmcord_bot.process_message.assert_not_called()
 
@@ -495,7 +495,7 @@ async def test_on_message_memory_disabled(llmcord_bot, mock_discord_message):
     llmcord_bot.has_permission = AsyncMock(return_value=True)
 
 
-    llmcord_bot.handle_memory_command = AsyncMock()
+    # llmcord_bot.handle_memory_command = AsyncMock() # Removed - Use fixture mock
     llmcord_bot.handle_forget_command = AsyncMock()
     llmcord_bot.process_message = AsyncMock()
 
@@ -503,7 +503,7 @@ async def test_on_message_memory_disabled(llmcord_bot, mock_discord_message):
     mock_discord_message.author.bot = False
     await llmcord_bot.on_message(mock_discord_message)
 
-    llmcord_bot.handle_memory_command.assert_not_called()
+    llmcord_bot.memory_command_handler.handle_legacy_command.assert_not_called()
     llmcord_bot.handle_forget_command.assert_not_called()
     # Should proceed to normal processing if memory is disabled
     llmcord_bot.process_message.assert_called_once_with(mock_discord_message)
@@ -518,7 +518,7 @@ async def test_on_message_memory_command_with_mention(llmcord_bot, mock_discord_
     mock_discord_message.channel.type = discord.ChannelType.text
     mock_discord_message.reference = None
 
-    llmcord_bot.handle_memory_command = AsyncMock()
+    # llmcord_bot.handle_memory_command = AsyncMock() # Removed - Use fixture mock
     llmcord_bot.handle_forget_command = AsyncMock()
     llmcord_bot.process_message = AsyncMock()
 
@@ -527,7 +527,7 @@ async def test_on_message_memory_command_with_mention(llmcord_bot, mock_discord_
     await llmcord_bot.on_message(mock_discord_message)
 
     # The mention should be stripped before command check
-    llmcord_bot.handle_memory_command.assert_called_once_with(mock_discord_message, "test args")
+    llmcord_bot.memory_command_handler.handle_legacy_command.assert_called_once_with(mock_discord_message, "test args")
     llmcord_bot.handle_forget_command.assert_not_called()
     llmcord_bot.process_message.assert_not_called()
 
