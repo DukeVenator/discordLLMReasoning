@@ -12,8 +12,8 @@ This guide covers how to install and run LLMCord.
 
 1.  **Clone the Repository:**
     ```bash
-    git clone https://github.com/jakobdylanc/llmcord.git
-    cd llmcord
+    git clone repo
+    cd folder
     ```
 
 2.  **Install Dependencies:**
