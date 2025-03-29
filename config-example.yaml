@@ -50,24 +50,17 @@ memory:
   prompt_injection_method: "system_prompt_prefix"
   memory_prefix: "[User Memory/Notes]:\n" # Text prepended to the memory content in the prompt
   max_memory_length: 1500             # Max characters allowed for stored memory per user
+  # LLM-suggested memory section removed (now integrated into main response)
 
-  # --- LLM-suggested memory ---
-  llm_suggests_memory: true  # Set to true to enable LLM to suggest memory updates
-  # Prompt instructing LLM on how/when to add memory suggestions
-  memory_suggestion_prompt: "\n\n---
-Internal Task: After your main response, analyze if any new, lasting information about the user (preferences, facts, personality, character details) was revealed or confirmed in our exchange. If yes, append a concise summary for my internal memory on a new line, enclosed in [MEM_UPDATE]...[/MEM_UPDATE]. Focus on information likely relevant for future interactions. Do NOT mention this task or the [MEM_UPDATE] section in your response to the user. Example: [MEM_UPDATE]User enjoys discussing classic literature.[/MEM_UPDATE]. If no significant new memory is worth noting, omit the [MEM_UPDATE] section entirely."
-  # Markers the bot will use to find the LLM's suggested memory update
-  memory_suggestion_start_marker: "[MEM_UPDATE]"
-  memory_suggestion_end_marker: "[/MEM_UPDATE]"
-  # How to add the suggestion to existing memory
-  # "append": Adds the new suggestion as a new line.
-  # "replace": Replaces the entire memory (USE WITH CAUTION). Default is append.
-  memory_suggestion_mode: "append"
-  # Prefix for each appended memory item (e.g., a bullet point)
-  memory_suggestion_append_prefix: "\n- " # Adds '- ' before each new appended suggestion
-  show_addition_confirmation: true # Show a confirmation message when memory is added/updated
-
-
+  # --- Memory Condensation Settings ---
+  condensation_threshold_percent: 80 # Condense memory if it exceeds this percentage of max_memory_length
+  condensation_target_buffer: 100  # How many characters below max_length the LLM should aim for
+  condensation_prompt: >
+    Please summarize and condense the following notes, removing redundancy
+    and keeping the most important points. Aim for a maximum length of
+    around {target_len} characters, but do not exceed {max_len} characters.\n\n
+    NOTES:\n```\n{current_memory}\n```\n\nCONDENSED NOTES:
+  # Memory Merge Settings removed (no longer needed)
 # --- Multimodel Settings (Optional) ---
 # Allows the bot to switch to a more powerful model for complex tasks.
 multimodel:
@@ -135,3 +128,9 @@ extra_api_parameters:
 system_prompt: >
   You are a helpful Discord chatbot.
   Respond conversationally. Format replies using Discord markdown.
+
+  **Memory Instructions:**
+  If you learn new, lasting information about the user or need to correct existing notes based on the conversation, include ONE of the following instructions at the VERY END of your response, after all other text:
+  1. To add a new note: `[MEM_APPEND]The new note text here.`
+  2. To replace an existing note: `[MEM_REPLACE:Exact old text to find]The new text to replace it with.`
+  Only include ONE instruction per response, if any. Do not mention these instructions in your conversational reply.

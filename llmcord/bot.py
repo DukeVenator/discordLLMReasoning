@@ -1,4 +1,5 @@
 import asyncio
+import re
 import logging
 from datetime import datetime as dt
 from base64 import b64encode
@@ -13,7 +14,6 @@ import httpx
 from .config import Config
 from .providers import ProviderFactory
 from .memory.storage import MemoryStorage
-from .memory.suggestions import MemorySuggestionProcessor
 from .utils.slash_commands import SlashCommandHandler
 from .utils.rate_limit import RateLimiter
 from .reasoning.manager import ReasoningManager
@@ -87,19 +87,18 @@ class LLMCordBot:
         self.slash_handler.setup()
         log.info("Slash command handler initialized and commands set up.")
 
-        # Setup memory store
-        self.memory_store = MemoryStorage(self.config)
-        await self.memory_store.init_db()
-        
-        # Setup memory processor
-        self.memory_processor = MemorySuggestionProcessor(self.memory_store, self.config)
-        
-        # Setup LLM provider
+        # Setup LLM provider FIRST (needed by memory store for condensation)
         self.llm_provider = await ProviderFactory.create_provider(self.config.get())
         if not self.llm_provider:
             log.critical("Failed to initialize LLM provider. Check configuration.")
-            return False
+            return False # Cannot proceed without LLM provider
+
+        # Setup memory store (pass the initialized provider)
+        self.memory_store = MemoryStorage(self.config, self.llm_provider)
+        await self.memory_store.init_db()
         
+        # Remove memory processor initialization (no longer used)
+        # self.memory_processor = MemorySuggestionProcessor(...)
         # Setup event handlers
         self.discord_client.event(self.on_ready)
         self.discord_client.event(self.on_message)
@@ -243,50 +242,37 @@ class LLMCordBot:
         """Process a message and generate a response using the LLM."""
         try:
             log.debug(f"[PROCESS] Starting to process message from {new_msg.author.name} (ID: {new_msg.author.id})")
-            
+
             # Build message history
             messages_openai_fmt, user_warnings = await self.build_message_history(new_msg)
-            
-            # Log message history
-            log.debug(f"[DEBUG] Message history structure: {len(messages_openai_fmt)} messages")
-            for i, msg in enumerate(messages_openai_fmt):
-                role = msg.get("role", "unknown")
-                content_preview = ""
-                if isinstance(msg.get("content"), str):
-                    content_preview = msg["content"][:100] + ("..." if len(msg["content"]) > 100 else "")
-                elif isinstance(msg.get("content"), list):
-                    content_preview = f"[Multimodal: {len([p for p in msg['content'] if p.get('type') == 'image_url'])} images, {len([p for p in msg['content'] if p.get('type') == 'text'])} text parts]"
-                log.debug(f"[DEBUG] Message {i+1}/{len(messages_openai_fmt)}: {role} - {content_preview}")
-                
-                
-                # Prepare system prompt and memory
-                system_prompt_text = await self.prepare_system_prompt(new_msg.author, include_reasoning_signal_instruction=True) # For default model
-                log.debug(f"[DEBUG] System prompt: {system_prompt_text[:100]}{'...' if len(system_prompt_text) > 100 else ''}")
-                
+
+            # Prepare system prompt and memory
+            system_prompt_text = await self.prepare_system_prompt(new_msg.author, include_reasoning_signal_instruction=True) # For default model
+            log.debug(f"[DEBUG] System prompt: {system_prompt_text[:100]}{'...' if len(system_prompt_text) > 100 else ''}")
+
             embed = discord.Embed()
             if user_warnings:
                 for warning in sorted(user_warnings):
                     embed.add_field(name=warning, value="", inline=False)
                 embed.color = EMBED_COLOR_INCOMPLETE
-            
+
             # Stream response
             response_content_full = ""
             response_msgs = []
             response_contents = []
             finish_reason = None
             edit_task = None
-            
+
             max_message_length = 2000 if self.config.get("use_plain_responses", False) else (4096 - len(STREAMING_INDICATOR))
-            
+
             log.info(f"Sending request to {self.config.get('model')} (History: {len(messages_openai_fmt)} msgs). User: {new_msg.author.id}")
-            
+
             # Start typing indicator
             async with new_msg.channel.typing():
                 # Generate response stream
                 stream_start_time = dt.now()
                 stream_chunks = 0
-                # Explicitly await first to get the async generator object
-                stream_generator = await self.llm_provider.generate_stream(
+                stream_generator = self.llm_provider.generate_stream(
                     messages_openai_fmt,
                     system_prompt=system_prompt_text
                 )
@@ -294,298 +280,240 @@ class LLMCordBot:
                     stream_chunks += 1
                     if finish_reason is not None:
                         break
-                    
+
                     finish_reason = chunk_finish
                     response_content_full += chunk_text
-                    
+
                     log.debug(f"[STREAM] Chunk {stream_chunks}: '{chunk_text}' (finish={chunk_finish})")
-                    
+
                     # Update Discord message
                     response_msgs, response_contents, edit_task, self.last_task_time = await self.update_discord_response(
-                        new_msg, chunk_text, finish_reason, response_msgs, response_contents, 
+                        new_msg, chunk_text, finish_reason, response_msgs, response_contents,
                         embed, edit_task, self.last_task_time
                     )
-                
+
                 stream_duration = (dt.now() - stream_start_time).total_seconds()
                 log.debug(f"[STREAM] Stream complete: {stream_chunks} chunks in {stream_duration:.2f}s. Final length: {len(response_content_full)} chars")
-                
+
                 # Ensure last edit task is complete
                 if edit_task is not None and not edit_task.done():
                     await edit_task
-                    # --- Multimodel Reasoning Check ---
-    
-                default_response_content = response_content_full # Store the original response
-    
-                reasoning_triggered = False
-    
-                if self.reasoning_manager and self.reasoning_manager.is_enabled():
-    
-                    if self.reasoning_manager.check_response_for_signal(default_response_content):
-    
-                        log.info(f"Reasoning signal '{self.reasoning_manager.get_reasoning_signal()}' detected in response from {self.config.get('model')}.")
-    
-                        reasoning_triggered = True
-    
-                        thinking_msg = None
-    
-                        try:
-    
-                            if self.reasoning_manager.should_notify_user():
-    
+
+                # --- Process Memory Instructions ---
+                log.debug("[MEM_CHECK] Checking if memory processing should run...")
+                if self.memory_store and self.memory_store.enabled:
+                    log.debug("[MEM_CHECK] Entering memory processing block.")
+                    user_id = new_msg.author.id
+                    # Define regex patterns (handle potential newlines in content)
+                    append_pattern = re.compile(r'\[MEM_APPEND\](.*)', re.IGNORECASE) # Simplest greedy match, no DOTALL, no optional close
+                    replace_pattern = re.compile(r'\[MEM_REPLACE:(.*?)\](.*)', re.IGNORECASE) # Simplest greedy match for content, no DOTALL, no optional close
+
+                    processed_content = response_content_full
+                    actions_taken = []
+
+                    # Process replacements first
+                    log.debug(f"[MEM_CHECK] Content before regex: '{processed_content}'")
+                    log.debug(f"[MEM_CHECK] repr(content): {repr(processed_content)}") # Log representation
+                    log.debug("[MEM_CHECK] Attempting to find MEM_REPLACE matches...")
+                    matches_replace = list(replace_pattern.finditer(processed_content))
+                    if matches_replace:
+                        log.debug(f"[MEM_CHECK] Found {len(matches_replace)} MEM_REPLACE matches.") # Indented
+                        log.debug(f"Found {len(matches_replace)} MEM_REPLACE instructions for user {user_id}.")
+                        for match in reversed(matches_replace): # Process in reverse
+                            text_to_find = match.group(1).strip().strip('`') # Strip whitespace AND backticks
+                            text_to_replace_with = match.group(2).strip().strip('`') # Strip whitespace AND backticks
+                            if text_to_find:
+                                log.debug(f"Attempting MEM_REPLACE for user {user_id}: Find='{text_to_find}', Replace='{text_to_replace_with}'")
+                                success = False # Default to False
                                 try:
-    
+                                    success = await self.memory_store.edit_memory(user_id, text_to_find, text_to_replace_with)
+                                    log.debug(f"MEM_REPLACE result for user {user_id}: Success={success}")
+                                except Exception as mem_err:
+                                    log.error(f"Error during MEM_REPLACE for user {user_id}: {mem_err}", exc_info=True)
+                                
+                                # Check success after try/except
+                                if success:
+                                    actions_taken.append(f"Edited memory (replaced '{text_to_find[:20]}...')")
+                                    processed_content = processed_content[:match.start()] + processed_content[match.end():]
+                                else:
+                                    # Log warning if edit_memory returned False or an exception occurred
+                                    log.warning(f"Failed MEM_REPLACE for user {user_id}: Find='{text_to_find[:20]}...', Replace='{text_to_replace_with[:20]}...' (Success={success})")
+                            else:
+                                log.warning(f"Skipping MEM_REPLACE for user {user_id} due to empty search text.")
+                                processed_content = processed_content[:match.start()] + processed_content[match.end():]
+
+                    # Process appends
+                    matches_append = list(append_pattern.finditer(processed_content))
+                    log.debug("[MEM_CHECK] Attempting to find MEM_APPEND matches...")
+                    log.debug(f"[MEM_CHECK] Simple check: '[MEM_APPEND]' in content? {'[MEM_APPEND]' in processed_content}")
+                    if matches_append:
+                        log.debug(f"Found {len(matches_append)} MEM_APPEND instructions for user {user_id}.")
+                        log.debug(f"[MEM_CHECK] Found {len(matches_append)} MEM_APPEND matches.") # Indented
+                        for match in reversed(matches_append): # Process in reverse # Indented
+                            text_to_append = match.group(1).strip().strip('`') # Strip whitespace AND backticks
+                            if text_to_append:
+                                log.debug(f"Attempting MEM_APPEND for user {user_id} with text: '{text_to_append}'")
+                                success = False # Default to False
+                                try:
+                                    success = await self.memory_store.append_memory(user_id, text_to_append)
+                                    log.debug(f"MEM_APPEND result for user {user_id}: Success={success}")
+                                except Exception as mem_err:
+                                    log.error(f"Error during MEM_APPEND for user {user_id}: {mem_err}", exc_info=True)
+                                
+                                # Check success after try/except
+                                if success:
+                                    actions_taken.append(f"Appended to memory ('{text_to_append[:20]}...')")
+                                    processed_content = processed_content[:match.start()] + processed_content[match.end():]
+                                else:
+                                    # Log warning if append_memory returned False or an exception occurred
+                                    log.warning(f"Failed MEM_APPEND for user {user_id}: '{text_to_append[:20]}...' (Success={success})")
+                        
+
+                    # Update response_content_full if modifications were made
+                    if actions_taken:
+                        log.info(f"Memory actions for user {user_id}: {'; '.join(actions_taken)}")
+                        response_content_full = processed_content.strip()
+                        # Note: If tags were already sent via streaming, this won't remove them from Discord.
+                # --- End Memory Instructions ---
+
+                # --- Multimodel Reasoning Check ---
+                default_response_content = response_content_full # Use potentially cleaned response
+                reasoning_triggered = False
+                if self.reasoning_manager and self.reasoning_manager.is_enabled():
+                    if self.reasoning_manager.check_response_for_signal(default_response_content):
+                        log.info(f"Reasoning signal '{self.reasoning_manager.get_reasoning_signal()}' detected in response from {self.config.get('model')}.")
+                        reasoning_triggered = True
+                        thinking_msg = None
+                        try:
+                            if self.reasoning_manager.should_notify_user():
+                                try:
                                     thinking_msg = await new_msg.channel.send("🧠 Thinking deeper...")
-    
-                                except discord.Forbidden:
-    
-                                    log.warning(f"Missing permissions to send 'Thinking deeper...' message in channel {new_msg.channel.id}")
-    
-                                except Exception as e:
-    
-                                    log.error(f"Failed to send 'Thinking deeper...' message: {e}")
-    
+                                except discord.Forbidden: log.warning(f"Missing permissions to send 'Thinking deeper...' message in channel {new_msg.channel.id}")
+                                except Exception as e: log.error(f"Failed to send 'Thinking deeper...' message: {e}")
 
                             allowed, cooldown = await self.reasoning_manager.check_rate_limit(new_msg.author.id)
-    
 
                             if allowed:
-    
                                 log.info(f"Switching to reasoning model: {self.config.get('multimodel.reasoning_model')}")
-    
                                 # Reset response state for the new stream
-    
                                 response_content_full = ""
-    
-                                # Keep response_msgs and response_contents to continue editing
-                                # response_msgs = [] # Removed reset
-                                # response_contents = [] # Removed reset
-                                
                                 finish_reason = None
                                 edit_task = None
-    
-                                self.last_task_time = 0 # Reset last task time for the new stream
-    
-                                embed = discord.Embed() # Reset embed
-    
+                                self.last_task_time = 0
+                                embed = discord.Embed()
 
                                 reasoning_stream_start_time = dt.now()
-    
                                 reasoning_stream_chunks = 0
-    
                                 async for chunk_text, chunk_finish in self.reasoning_manager.generate_reasoning_response(
-    
                                     messages_openai_fmt,
-    
-                                    system_prompt=await self.prepare_system_prompt(new_msg.author, include_reasoning_signal_instruction=False) # Regenerate without signal instruction
-    
+                                    system_prompt=await self.prepare_system_prompt(new_msg.author, include_reasoning_signal_instruction=False)
                                 ):
-    
                                     reasoning_stream_chunks += 1
-    
-                                    if finish_reason is not None:
-    
-                                        break
-    
+                                    if finish_reason is not None: break
                                     finish_reason = chunk_finish
-    
                                     response_content_full += chunk_text
-    
                                     log.debug(f"[REASONING_STREAM] Chunk {reasoning_stream_chunks}: '{chunk_text}' (finish={chunk_finish})")
-    
-                                    
-                                    # Update Discord message using the same logic
-    
                                     response_msgs, response_contents, edit_task, self.last_task_time = await self.update_discord_response(
-    
-                                        new_msg, chunk_text, finish_reason, response_msgs, response_contents, 
-    
+                                        new_msg, chunk_text, finish_reason, response_msgs, response_contents,
                                         embed, edit_task, self.last_task_time
-    
                                     )
-    
-                                
+
                                 reasoning_stream_duration = (dt.now() - reasoning_stream_start_time).total_seconds()
-    
                                 log.debug(f"[REASONING_STREAM] Stream complete: {reasoning_stream_chunks} chunks in {reasoning_stream_duration:.2f}s. Final length: {len(response_content_full)} chars")
-    
-                                
-                                # Ensure last edit task is complete for reasoning stream
-    
+
                                 if edit_task is not None and not edit_task.done():
-    
                                     await edit_task
-    
 
                             else: # Reasoning rate limit hit
-    
                                 log.warning(f"Reasoning rate limit hit for user {new_msg.author.id}. Falling back to default response (signal removed).")
-    
                                 try:
-    
                                     await new_msg.reply(
-    
                                         f"🧠 Reasoning rate limit reached. Please wait {cooldown:.1f} seconds before triggering complex tasks again.",
-    
-                                        mention_author=False,
-    
-                                        delete_after=max(5.0, min(cooldown, 15.0))
-    
+                                        mention_author=False, delete_after=max(5.0, min(cooldown, 15.0))
                                     )
-    
-                                except discord.Forbidden:
-    
-                                    log.warning(f"Missing permissions to send reasoning rate limit message in channel {new_msg.channel.id}")
-    
-                                except Exception as e:
-    
-                                     log.error(f"Failed to send reasoning rate limit message: {e}")
-    
-                                
-                                # Fallback: Use the original response but remove the signal
-    
-                                signal = self.reasoning_manager.get_reasoning_signal()
-    
-                                response_content_full = default_response_content.replace(signal, "").strip()
-    
-                                log.debug(f"Fallback response after removing signal: {response_content_full[:100]}...")
-    
-                                # Need to potentially re-edit the final message if the default stream already finished
-    
-                                if response_msgs:
-    
-                                    last_msg = response_msgs[-1]
-    
-                                    is_embed = not self.config.get("use_plain_responses", False)
-    
-                                    max_len = 4096 if is_embed else 2000
-    
-                                    cleaned_content_truncated = response_content_full[:max_len]
-    
-                                    try:
-    
-                                        if is_embed:
-    
-                                            # Rebuild embed with cleaned content
-    
-                                            final_embed = discord.Embed(description=cleaned_content_truncated, color=EMBED_COLOR_COMPLETE)
-    
-                                            await last_msg.edit(embed=final_embed)
-    
-                                        else:
-    
-                                            await last_msg.edit(content=cleaned_content_truncated)
-    
-                                        log.debug(f"[FALLBACK_EDIT] Edited final message {last_msg.id} to remove reasoning signal.")
-    
-                                    except discord.HTTPException as e:
-    
-                                        log.error(f"[FALLBACK_EDIT] Failed to edit message {last_msg.id} to remove signal: {e}")
-    
+                                except discord.Forbidden: log.warning(f"Missing permissions to send reasoning rate limit message in channel {new_msg.channel.id}")
+                                except Exception as e: log.error(f"Failed to send reasoning rate limit message: {e}")
 
+                                # Fallback: Use the original response but remove the signal
+                                signal = self.reasoning_manager.get_reasoning_signal()
+                                response_content_full = default_response_content.replace(signal, "").strip()
+                                log.debug(f"Fallback response after removing signal: {response_content_full[:100]}...")
+                                # Re-edit final message if needed
+                                if response_msgs:
+                                    last_msg = response_msgs[-1]
+                                    is_embed = not self.config.get("use_plain_responses", False)
+                                    max_len = 4096 if is_embed else 2000
+                                    cleaned_content_truncated = response_content_full[:max_len]
+                                    try:
+                                        if is_embed:
+                                            final_embed = discord.Embed(description=cleaned_content_truncated, color=EMBED_COLOR_COMPLETE)
+                                            await last_msg.edit(embed=final_embed)
+                                        else:
+                                            await last_msg.edit(content=cleaned_content_truncated)
+                                        log.debug(f"[FALLBACK_EDIT] Edited final message {last_msg.id} to remove reasoning signal.")
+                                    except discord.HTTPException as e: log.error(f"[FALLBACK_EDIT] Failed to edit message {last_msg.id} to remove signal: {e}")
                         finally:
-    
-                            # Delete the 'Thinking deeper...' message if it was sent
-    
                             if thinking_msg:
-    
-                                try:
-    
-                                    await thinking_msg.delete()
-    
-                                except discord.NotFound:
-    
-                                    pass # Message already deleted
-    
-                                except discord.Forbidden:
-                                    log.warning(f"Missing permissions to delete 'Thinking deeper...' message {thinking_msg.id}")
-                                except Exception as e:
-                                    log.error(f"Failed to delete 'Thinking deeper...' message {thinking_msg.id}: {e}")
+                                try: await thinking_msg.delete()
+                                except discord.NotFound: pass
+                                except discord.Forbidden: log.warning(f"Missing permissions to delete 'Thinking deeper...' message {thinking_msg.id}")
+                                except Exception as e: log.error(f"Failed to delete 'Thinking deeper...' message {thinking_msg.id}: {e}")
                 # --- End Multimodel Reasoning Check ---
-                
-                # Process memory suggestion
-                if self.memory_processor.enabled and response_msgs:
-                    suggestion = self.memory_processor.extract_suggestion(response_content_full)
-                    if suggestion:
-                        log.debug(f"[MEMORY] Extracted suggestion: {suggestion[:100]}{'...' if len(suggestion) > 100 else ''}")
-                        cleaned_response = self.memory_processor.get_cleaned_response(response_content_full)
-                        
-                        # Update the last message to remove suggestion
-                        last_response_msg = response_msgs[-1]
-                        if self.config.get("use_plain_responses", False):
-                            if last_response_msg.content != cleaned_response:
-                                await last_response_msg.edit(content=cleaned_response[:2000])
-                                log.debug(f"[OUTPUT] Updated message to remove suggestion")
+                # --- Send Memory Update Confirmation ---
+                if actions_taken and self.config.get("memory.notify_on_update", True):
+                    try:
+                        confirmation_text = f"🧠 Memory updated: {'; '.join(actions_taken)}"
+                        send_as_reply = self.config.get("memory.notify_as_reply", True)
+                        delete_delay = self.config.get("memory.notify_delete_after", 15.0)
+                        delete_after_seconds = float(delete_delay) if delete_delay is not None and float(delete_delay) > 0 else None
+
+                        if send_as_reply:
+                            await new_msg.reply(confirmation_text, mention_author=False, delete_after=delete_after_seconds)
                         else:
-                            embed.description = cleaned_response[:4096]
-                            embed.color = EMBED_COLOR_COMPLETE
-                            if STREAMING_INDICATOR in embed.description:
-                                embed.description = embed.description.replace(STREAMING_INDICATOR, "")
-                            await last_response_msg.edit(embed=embed)
-                            log.debug(f"[OUTPUT] Updated embed to remove suggestion")
-                        
-                        # Save the suggestion
-                        log.info(f"[MEMORY_SAVE_TRIGGER] Triggered for user {new_msg.author.id} by message {new_msg.id}. Suggestion: {suggestion[:100]}...") # Added log
-                        await self.memory_processor.process_and_save_suggestion(new_msg.author.id, suggestion)
-                        # Send confirmation message if enabled
-                        if self.config.get("memory.show_addition_confirmation", False):
-                            try:
-                                # Truncate suggestion for display
-                                display_suggestion = suggestion[:1000] + ('...' if len(suggestion) > 1000 else '')
-                                await new_msg.channel.send(f"🧠 Memory updated:\n```\n{display_suggestion}\n```")
-                                log.debug(f"[MEMORY] Sent confirmation message with suggestion to channel {new_msg.channel.id}")
-                            except discord.Forbidden:
-                                log.warning(f"[MEMORY] Missing permissions to send confirmation message in channel {new_msg.channel.id}")
-                            except Exception as e:
-                                log.error(f"[MEMORY] Failed to send confirmation message: {e}")
-                        
-                        
-                        # Update response_content_full for node storage
-                        response_content_full = cleaned_response
-    
+                            await new_msg.channel.send(confirmation_text, delete_after=delete_after_seconds)
+                            
+                        log.info(f"Sent memory update confirmation for user {user_id} (Reply={send_as_reply}, DeleteAfter={delete_after_seconds})")
+                    except discord.Forbidden:
+                        log.warning(f"Missing permissions to send memory update confirmation in channel {new_msg.channel.id}")
+                    except Exception as conf_err:
+                        log.error(f"Failed to send memory update confirmation: {conf_err}")
+                # --- End Memory Update Confirmation ---
+
                 # --- Fallback Mention Replacement ---
-                # Replace any lingering literal '<@USER_ID>' with the actual user mention
-                # This catches cases where the LLM might ignore the prompt instruction.
                 literal_mention = "<@USER_ID>"
                 if literal_mention in response_content_full:
                     actual_mention = f"<@{new_msg.author.id}>"
                     response_content_full = response_content_full.replace(literal_mention, actual_mention)
                     log.debug(f"[POST_PROCESS] Replaced literal '{literal_mention}' with actual mention '{actual_mention}'")
                 # --- End Fallback ---
-    
+
                 # Final check to ensure the last message reflects the complete content
                 if response_msgs:
                     last_response_msg = response_msgs[-1]
-                    final_expected_content = response_content_full # Already potentially cleaned by memory processor
+                    final_expected_content = response_content_full # Already cleaned
                     current_discord_content = ""
                     is_embed = not self.config.get("use_plain_responses", False)
-    
+
                     if is_embed and last_response_msg.embeds:
                         current_discord_content = last_response_msg.embeds[0].description or ""
-                        # Remove potential streaming indicator for comparison
                         if current_discord_content.endswith(STREAMING_INDICATOR):
                             current_discord_content = current_discord_content[:-len(STREAMING_INDICATOR)]
                     elif not is_embed:
                         current_discord_content = last_response_msg.content
-    
-                    # Ensure max length for comparison
+
                     max_len_compare = 4096 if is_embed else 2000
                     final_expected_content_truncated = final_expected_content[:max_len_compare]
-    
+
                     if current_discord_content != final_expected_content_truncated:
                         log.debug(f"[FINAL_EDIT] Mismatch detected. Performing final update for message {last_response_msg.id}.")
                         try:
                             if is_embed:
-                                # Re-create the final embed state
-                                final_embed = discord.Embed(
-                                    description=final_expected_content_truncated,
-                                    color=EMBED_COLOR_COMPLETE # Should be complete by now
-                                )
+                                final_embed = discord.Embed(description=final_expected_content_truncated, color=EMBED_COLOR_COMPLETE)
                                 await last_response_msg.edit(embed=final_embed)
                             else:
                                 await last_response_msg.edit(content=final_expected_content_truncated)
                             log.debug(f"[FINAL_EDIT] Final update successful for message {last_response_msg.id}.")
-                        except discord.HTTPException as e:
-                            log.error(f"[FINAL_EDIT] Failed to perform final update for message {last_response_msg.id}: {e}")
+                        except discord.HTTPException as e: log.error(f"[FINAL_EDIT] Failed to perform final update for message {last_response_msg.id}: {e}")
                     else:
                         log.debug(f"[FINAL_EDIT] No mismatch detected. Final content already matches for message {last_response_msg.id}.")
 
@@ -595,14 +523,14 @@ class LLMCordBot:
                     async with self.msg_nodes[response_msg.id].lock:
                         self.msg_nodes[response_msg.id].text = response_content_full
                         log.debug(f"[CACHE] Updated node for message ID {response_msg.id}")
-                
+
             # Log final response
             log.debug(f"[OUTPUT] Final response: {response_content_full[:100]}{'...' if len(response_content_full) > 100 else ''}")
             log.debug(f"[OUTPUT] Response sent as {len(response_msgs)} message(s)")
-            
+
             # Clean up old nodes
             await self.cleanup_msg_nodes()
-            
+
         except Exception as e:
             log.exception(f"Error processing message: {e}")
             embed = discord.Embed(
@@ -866,6 +794,18 @@ class LLMCordBot:
                 
                 if memory_method == "system_prompt_prefix":
                     final_system_prompt = f"{memory_prefix}{user_memory}\n\n{final_system_prompt}" if final_system_prompt else f"{memory_prefix}{user_memory}"
+            # Inject Memory Instructions if memory is enabled
+            memory_instructions = (
+                "\n\n**Memory Instructions:**\n"
+                "If you learn new, lasting information about the user OR need to modify/remove existing notes based on the conversation, "
+                "include ONE of the following instructions at the VERY END of your response, after all other text:\n"
+                "1. To add a new note: `[MEM_APPEND]The new note text here.`\n"
+                "2. To modify or remove an existing note: `[MEM_REPLACE:Exact old text to find]The new text to replace it with (leave empty to remove).`\n"
+                "**IMPORTANT:** Use `[MEM_REPLACE]` for *any* change or deletion requested by the user, even if they just say \"remove X\" or \"change X to Y\". Find the exact text and provide the new text (or leave it empty to delete).\n"
+                "Only include ONE instruction per response, if any. Do not mention these instructions in your conversational reply."
+            )
+            final_system_prompt = (final_system_prompt.strip() + memory_instructions).strip()
+            log.debug("[SYSTEM] Injected memory instructions into system prompt.")
         
         # Add memory suggestion prompt if enabled
         if self.config.get("memory.llm_suggests_memory", False):

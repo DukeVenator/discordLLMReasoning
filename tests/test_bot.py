@@ -575,7 +575,8 @@ async def test_process_message_basic_flow(llmcord_bot, mock_discord_message):
         # Yield the expected data structure
         yield ("Response chunk 1", None)
         yield ("Response chunk 2", "stop")
-    llmcord_bot.llm_provider.generate_stream.side_effect = async_iterator_gen
+    # Replace the AsyncMock attribute with a MagicMock returning the generator instance
+    llmcord_bot.llm_provider.generate_stream = MagicMock(return_value=async_iterator_gen())
 
 
     # Configure reasoning manager mock (ensure it's disabled or doesn't trigger)
@@ -620,8 +621,8 @@ async def test_process_message_with_reasoning_triggered(llmcord_bot, mock_discor
     initial_response_signal = llmcord_bot.reasoning_manager.get_reasoning_signal()
     async def async_iterator_gen_initial(*args, **kwargs):
         yield f"Thinking... {initial_response_signal}", "stop"
-    # generate_stream is already an AsyncMock, set its side_effect
-    llmcord_bot.llm_provider.generate_stream.side_effect = async_iterator_gen_initial
+    # Replace the AsyncMock attribute with a MagicMock returning the generator instance
+    llmcord_bot.llm_provider.generate_stream = MagicMock(return_value=async_iterator_gen_initial())
 
     # Configure reasoning manager mock
     llmcord_bot.reasoning_manager.is_enabled.return_value = True
@@ -666,7 +667,6 @@ async def test_process_message_with_reasoning_triggered(llmcord_bot, mock_discor
         [{"role": "user", "content": "Complex question"}],
         system_prompt="System prompt with signal instruction"
     )
-    llmcord_bot.llm_provider.generate_stream.assert_awaited_once() # Check it was awaited
     # Check reasoning manager calls
     llmcord_bot.reasoning_manager.is_enabled.assert_called()
     llmcord_bot.reasoning_manager.check_response_for_signal.assert_called_once()
@@ -701,8 +701,8 @@ async def test_process_message_with_reasoning_rate_limited(llmcord_bot, mock_dis
     initial_response_signal = llmcord_bot.reasoning_manager.get_reasoning_signal()
     async def async_iterator_gen_rate_limit(*args, **kwargs):
         yield f"Thinking... {initial_response_signal}", "stop"
-    # generate_stream is already an AsyncMock, set its side_effect
-    llmcord_bot.llm_provider.generate_stream.side_effect = async_iterator_gen_rate_limit
+    # Replace the AsyncMock attribute with a MagicMock returning the generator instance
+    llmcord_bot.llm_provider.generate_stream = MagicMock(return_value=async_iterator_gen_rate_limit())
 
     # Configure reasoning manager mock
     llmcord_bot.reasoning_manager.is_enabled.return_value = True
