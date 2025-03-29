@@ -1,0 +1,137 @@
+# Discord settings:
+
+bot_token: YOUR_DISCORD_BOT_TOKEN # Example: MTA2...
+client_id: YOUR_BOTS_CLIENT_ID    # Example: 106... (For invite link generation)
+status_message:                   # Example: Chatting with LLMs
+
+# Message processing settings:
+max_text: 100000  # Max characters per message to consider
+max_images: 5     # Max images per message (if model supports vision)
+max_messages: 25  # Max messages in conversation history
+
+use_plain_responses: false # Set to true for plain text replies instead of embeds
+allow_dms: true          # Allow the bot to be used in Direct Messages
+
+# Permissions: Set IDs to allow/block specific users, roles, or channels. Leave lists empty to allow all.
+permissions:
+  users:
+    allowed_ids: [] # e.g., [123456789...]
+    blocked_ids: []
+  roles:
+    allowed_ids: [] # e.g., [987654321...]
+    blocked_ids: []
+  channels: # Checks channel, parent forum channel, and category
+    allowed_ids: [] # e.g., [112233445...]
+    blocked_ids: []
+
+
+# Rate Limiting: Control how often users can interact with the bot.
+rate_limits:
+  enabled: true       # Set to false to disable rate limiting entirely
+  user_limit: 5       # Max number of requests per user within the period
+  user_period: 60     # Time period in seconds
+  global_limit: 100    # Max total requests for the bot within the global period
+  global_period: 60    # Time period in seconds for the global limit
+  # --- Reasoning Model Rate Limits (if multimodel enabled) ---
+  reasoning_user_limit: 2    # Max reasoning requests per user within the period
+  reasoning_user_period: 300   # Time period in seconds for reasoning limit
+  reasoning_global_limit: 2 # Optional: Max total reasoning requests globally
+  reasoning_global_period: 61 # Optional: Time period for global reasoning limit
+
+  # admin_bypass: true # Optional: Allow users with admin permissions to bypass limits
+
+# --- Persistent Memory Settings ---
+memory:
+  enabled: true                       # Set to true to enable persistent memory
+  database_path: "llmcord_memory.db"  # Path to the SQLite database file
+  # How to inject memory into the prompt:
+  # "system_prompt_prefix": Adds memory before the main system prompt. (Recommended)
+  # "user_message_prefix": Adds memory as a separate user message after the system prompt.
+  prompt_injection_method: "system_prompt_prefix"
+  memory_prefix: "[User Memory/Notes]:\n" # Text prepended to the memory content in the prompt
+  max_memory_length: 1500             # Max characters allowed for stored memory per user
+
+  # --- LLM-suggested memory ---
+  llm_suggests_memory: true  # Set to true to enable LLM to suggest memory updates
+  # Prompt instructing LLM on how/when to add memory suggestions
+  memory_suggestion_prompt: "\n\n---
+Internal Task: After your main response, analyze if any new, lasting information about the user (preferences, facts, personality, character details) was revealed or confirmed in our exchange. If yes, append a concise summary for my internal memory on a new line, enclosed in [MEM_UPDATE]...[/MEM_UPDATE]. Focus on information likely relevant for future interactions. Do NOT mention this task or the [MEM_UPDATE] section in your response to the user. Example: [MEM_UPDATE]User enjoys discussing classic literature.[/MEM_UPDATE]. If no significant new memory is worth noting, omit the [MEM_UPDATE] section entirely."
+  # Markers the bot will use to find the LLM's suggested memory update
+  memory_suggestion_start_marker: "[MEM_UPDATE]"
+  memory_suggestion_end_marker: "[/MEM_UPDATE]"
+  # How to add the suggestion to existing memory
+  # "append": Adds the new suggestion as a new line.
+  # "replace": Replaces the entire memory (USE WITH CAUTION). Default is append.
+  memory_suggestion_mode: "append"
+  # Prefix for each appended memory item (e.g., a bullet point)
+  memory_suggestion_append_prefix: "\n- " # Adds '- ' before each new appended suggestion
+  show_addition_confirmation: true # Show a confirmation message when memory is added/updated
+
+
+# --- Multimodel Settings (Optional) ---
+# Allows the bot to switch to a more powerful model for complex tasks.
+multimodel:
+  enabled: false              # Set to true to enable switching to the reasoning model
+  reasoning_model: "openai/gpt-4o" # The model to use for complex reasoning tasks (e.g., openai/gpt-4o, google-gemini/gemini-1.5-pro-latest)
+  reasoning_signal: "[USE_REASONING_MODEL]" # The exact text the default model should output to trigger the switch
+  notify_user: true           # Set to true to send a "Thinking deeper..." message when switching
+  # Optional: Override API parameters specifically for the reasoning model
+  reasoning_extra_api_parameters:
+    # max_tokens: 8192
+    # temperature: 0.5
+  reasoning_signal: "[USE_REASONING_MODEL]" # The exact text the default model should output to trigger the switch
+  notify_user: true           # Set to true to send a "Thinking deeper..." message when switching
+
+# LLM settings:
+
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key: YOUR_OPENAI_API_KEY # sk-...
+  x-ai:
+    base_url: https://api.x.ai/v1
+    api_key: YOUR_XAI_API_KEY
+  mistral:
+    base_url: https://api.mistral.ai/v1
+    api_key: YOUR_MISTRAL_API_KEY
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    api_key: YOUR_GROQ_API_KEY # gsk_...
+  openrouter: # Can proxy many models including Gemini, useful for OpenAI format
+    base_url: https://openrouter.ai/api/v1
+    api_key: YOUR_OPENROUTER_API_KEY # sk-or-...
+  google-gemini: # Uses the native Google Gemini API (requires google-generativeai library)
+    api_key: YOUR_GOOGLE_API_KEY # From Google AI Studio / GCP
+    # base_url: Not needed, handled by google-generativeai library
+  ollama:
+    base_url: http://localhost:11434/v1
+    # api_key: Not typically required for local Ollama
+  lmstudio:
+    base_url: http://localhost:1234/v1
+  vllm:
+    base_url: http://localhost:8000/v1
+  oobabooga:
+    base_url: http://localhost:5000/v1
+  jan:
+    base_url: http://localhost:1337/v1
+
+# Select the provider and model. Format: provider_name/model_name
+# Examples: openai/gpt-4o, google-gemini/gemini-1.5-pro-latest, ollama/llama3
+model: google-gemini/gemini-1.5-pro-latest
+
+# Optional parameters passed directly to the LLM API (must be supported by the provider/model)
+# Check provider documentation for available parameters.
+extra_api_parameters:
+  # Common parameters (OpenAI compatible):
+  max_tokens: 4096 # Max tokens for the *response*
+  temperature: 0.8
+  # top_p: 1.0
+  # frequency_penalty: 0.0
+  # presence_penalty: 0.0
+  # Google Gemini specific generation_config parameters:
+  # candidate_count: 1 # Gemini equivalent for 'n' often defaults to 1
+
+# Default system prompt. Will have date and user ID info appended.
+system_prompt: >
+  You are a helpful Discord chatbot.
+  Respond conversationally. Format replies using Discord markdown.
