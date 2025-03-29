@@ -136,6 +136,7 @@ class LLMCordBot:
             log.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/api/oauth2/authorize?client_id={client_id}&permissions=412317273088&scope=bot\n")
     
     async def on_message(self, new_msg: discord.Message):
+        print("DEBUG_TEST: Entering on_message") # Temporary debug print
         """Handle incoming Discord messages."""
         # Ignore bot messages
         if new_msg.author.bot:
@@ -284,11 +285,12 @@ class LLMCordBot:
                 # Generate response stream
                 stream_start_time = dt.now()
                 stream_chunks = 0
-                
-                async for chunk_text, chunk_finish in self.llm_provider.generate_stream(
-                    messages_openai_fmt, 
+                # Explicitly await first to get the async generator object
+                stream_generator = await self.llm_provider.generate_stream(
+                    messages_openai_fmt,
                     system_prompt=system_prompt_text
-                ):
+                )
+                async for chunk_text, chunk_finish in stream_generator:
                     stream_chunks += 1
                     if finish_reason is not None:
                         break
@@ -1079,3 +1081,4 @@ class LLMCordBot:
             await self.memory_store.close_db()
             await self.httpx_client.aclose()
             await self.discord_client.close()
+

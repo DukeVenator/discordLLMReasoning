@@ -27,3 +27,6 @@ llmcord/utils/__pycache__/rate_limit.cpython-312.pyc
 llmcord/utils/__pycache__/slash_commands.cpython-312.pyc
 llmcord.egg-info
 llmcord_memory.db
+llmcord_memory.db
+**/**/__pycache__/
+llmcord_memory.db

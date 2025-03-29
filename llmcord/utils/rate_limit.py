@@ -163,6 +163,30 @@ class RateLimiter:
 
         # --- Check global cooldown ---
         # Reading without lock is slightly risky for count but ok for informational cooldown
+        global_count = self.global_request_count
+        global_last_time = self.global_last_request_time
+        global_time_since_last = current_time - global_last_time
+
+        # Only consider global cooldown if the limit is actually reached
+        if global_count >= self.global_limit:
+             remaining = self.global_cooldown_seconds - global_time_since_last
+             global_remaining = max(0.0, remaining)
+
+        # --- Check user cooldown ---
+        if user_id in self.user_data:
+            user_data = self.user_data[user_id]
+            # Reading without lock is slightly risky but ok for informational cooldown
+            user_count = user_data.request_count
+            user_last_time = user_data.last_request_time
+            user_time_since_last = current_time - user_last_time
+
+            # Only consider user cooldown if the limit is actually reached
+            if user_count >= self.user_limit:
+                 remaining = self.user_cooldown_seconds - user_time_since_last
+                 user_remaining = max(0.0, remaining)
+
+        # Return the longer of the two cooldowns
+        return max(global_remaining, user_remaining)
 
     async def check_reasoning_rate_limit(self, user_id: int) -> Tuple[bool, str]:
         """
@@ -270,29 +294,6 @@ class RateLimiter:
             user_time_since_last = current_time - user_last_time
             if user_count >= self.reasoning_user_limit:
                  remaining = self.reasoning_user_cooldown_seconds - user_time_since_last
-                 user_remaining = max(0.0, remaining)
-
-        return max(global_remaining, user_remaining)
-        global_count = self.global_request_count
-        global_last_time = self.global_last_request_time
-        global_time_since_last = current_time - global_last_time
-        
-        # Only consider global cooldown if the limit is actually reached
-        if global_count >= self.global_limit:
-             remaining = self.global_cooldown_seconds - global_time_since_last
-             global_remaining = max(0.0, remaining)
-
-        # --- Check user cooldown ---
-        if user_id in self.user_data:
-            user_data = self.user_data[user_id]
-            # Reading without lock is slightly risky but ok for informational cooldown
-            user_count = user_data.request_count
-            user_last_time = user_data.last_request_time
-            user_time_since_last = current_time - user_last_time
-            
-            # Only consider user cooldown if the limit is actually reached
-            if user_count >= self.user_limit:
-                 remaining = self.user_cooldown_seconds - user_time_since_last
                  user_remaining = max(0.0, remaining)
 
         # Return the longer of the two cooldowns
