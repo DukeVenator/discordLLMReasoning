@@ -48,132 +48,55 @@ class SlashCommandHandler:
             action: str,
             content: Optional[str] = None
         ):
-            await interaction.response.defer(ephemeral=True)
-            
-            if not self.bot.config.get("memory.enabled", False):
-                await interaction.followup.send("Memory feature is disabled.", ephemeral=True)
+            # Deferral will be handled within the MemoryCommandHandler methods if needed
+            # await interaction.response.defer(ephemeral=True) # Removed deferral here
+
+            if not self.bot.memory_command_handler or not self.bot.memory_command_handler.memory_store.enabled:
+                 # Need to check if handler exists and is enabled
+                 # Use response.send_message if not deferred yet
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("Memory feature is disabled.", ephemeral=True)
+                else:
+                    await interaction.followup.send("Memory feature is disabled.", ephemeral=True)
                 return
-            
-            user_id = interaction.user.id
-            
+
+            # Delegate to the shared handler
+            handler = self.bot.memory_command_handler
             if action == "view":
-                current_memory = await self.bot.memory_store.get_user_memory(user_id)
-                if current_memory:
-                    max_len = self.bot.config.get("memory.max_memory_length", 1500)
-                    header = f"Your current notes ({len(current_memory)} chars / {max_len} max):"
-                    # Approximate length check, accounting for header, code ticks, newlines
-                    full_message_approx_len = len(header) + len(current_memory) + 10
-
-                    MAX_SINGLE_MESSAGE_LEN = 1950 # Keep well under Discord's 2000 char limit for ephemeral messages
-
-                    if full_message_approx_len <= MAX_SINGLE_MESSAGE_LEN:
-                        # Memory fits in a single message
-                        reply_content = f"{header}\n```\n{current_memory}\n```"
-                        await interaction.followup.send(content=reply_content, ephemeral=True)
-                    else:
-                        # Memory is too long, send header then chunks
-                        await interaction.followup.send(content=header, ephemeral=True)
-                        # Calculate chunk size leaving room for ```\n \n``` formatting
-                        CHUNK_SIZE = MAX_SINGLE_MESSAGE_LEN - 10
-                        await self.send_in_chunks(interaction, current_memory, CHUNK_SIZE)
-                else:
-                    # No memory saved
-                    await interaction.followup.send("You have no saved notes.", ephemeral=True)
-            
+                await handler.handle_view(interaction)
             elif action == "update":
-                if not content:
-                    await interaction.followup.send("Please provide content to update your notes.", ephemeral=True)
-                    return
-                
-                max_len = self.bot.config.get("memory.max_memory_length", 1500)
-                if len(content) > max_len:
-                    await interaction.followup.send(f"❌ Error: Notes too long (max {max_len} chars). **Not saved.**", ephemeral=True)
-                    return
-                
-                success = await self.bot.memory_store.save_user_memory(user_id, content)
-                if success:
-                    await interaction.followup.send(f"✅ Your notes have been updated ({len(content)} chars saved).", ephemeral=True)
+                if content is not None: # Check content exists
+                    await handler.handle_update(interaction, content)
                 else:
-                    await interaction.followup.send("❌ Error saving notes. Please try again later.", ephemeral=True)
-            
+                    # Use response.send_message if not deferred yet
+                    if not interaction.response.is_done():
+                         await interaction.response.send_message("Please provide content to update your notes.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("Please provide content to update your notes.", ephemeral=True)
             elif action == "clear":
-                success = await self.bot.memory_store.save_user_memory(user_id, "")
-                if success:
-                    await interaction.followup.send("✅ Your notes have been cleared.", ephemeral=True)
-                else:
-                    await interaction.followup.send("❌ Error clearing notes. Please try again later.", ephemeral=True)
-            # Condense action removed (now automatic in MemoryStorage.save_user_memory)
+                await handler.handle_clear(interaction)
         
 
-        # Memory Edit command
+        # Memory Edit command (Interactive)
         @self.tree.command(
             name="memory_edit",
-            description="Edit your memory notes by replacing text"
+            description="Interactively edit or delete lines from your memory notes"
         )
-        @app_commands.describe(
-            search_text="The exact text to find in your notes",
-            replace_text="The text to replace it with"
-        )
-        async def memory_edit_command(
-            interaction: discord.Interaction,
-            search_text: str,
-            replace_text: str
-        ):
-            await interaction.response.defer(ephemeral=True)
-            
-            if not self.bot.config.get("memory.enabled", False):
-                await interaction.followup.send("Memory feature is disabled.", ephemeral=True)
-                return
-            
-            user_id = interaction.user.id
-            log.info(f"User {user_id} initiated memory edit. Searching for: '{search_text}'")
+        # No parameters needed for interactive session start
+        async def memory_edit_command(interaction: discord.Interaction):
+            # Deferral will be handled within the MemoryCommandHandler methods if needed
+            # await interaction.response.defer(ephemeral=True) # Removed deferral here
 
-            try:
-                current_memory = await self.bot.memory_store.get_user_memory(user_id)
-                
-                if not current_memory:
-                    await interaction.followup.send("You have no saved notes to edit.", ephemeral=True)
-                    return
-
-                if search_text not in current_memory:
-                    await interaction.followup.send(f'Could not find the text "{search_text}" in your notes.', ephemeral=True)
-                    return
-                
-                # Perform replacement
-                original_length = len(current_memory)
-                modified_memory = current_memory.replace(search_text, replace_text)
-                modified_length = len(modified_memory)
-                replacements_made = current_memory.count(search_text) # Count occurrences
-
-                if modified_memory == current_memory:
-                     # This case should technically be caught by 'search_text not in current_memory'
-                     # but added as a safeguard.
-                    await interaction.followup.send(f'Could not find the text "{search_text}" in your notes.', ephemeral=True)
-                    return
-
-                # Check length limit
-                max_len = self.bot.config.get("memory.max_memory_length", 1500)
-                if modified_length > max_len:
-                    await interaction.followup.send(
-                        f"❌ Error: Making that change would exceed the maximum note length ({modified_length}/{max_len} chars). **Edit not saved.**", 
-                        ephemeral=True
-                    )
-                    return
-
-                # Save the modified memory
-                success = await self.bot.memory_store.save_user_memory(user_id, modified_memory)
-                if success:
-                    log.info(f"Successfully edited memory for user {user_id}. New length: {modified_length}. Replacements: {replacements_made}")
-                    await interaction.followup.send(
-                        f'✅ Successfully replaced {replacements_made} instance(s) of "{search_text}". New note length: {modified_length} chars.', 
-                        ephemeral=True
-                    )
+            if not self.bot.memory_command_handler or not self.bot.memory_command_handler.memory_store.enabled:
+                 # Need to check if handler exists and is enabled
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("Memory feature is disabled.", ephemeral=True)
                 else:
-                    raise RuntimeError("Failed to save edited memory to database.")
+                    await interaction.followup.send("Memory feature is disabled.", ephemeral=True)
+                return
 
-            except Exception as e:
-                log.error(f"Error during memory edit for user {user_id}: {e}", exc_info=True)
-                await interaction.followup.send(f"❌ An error occurred while editing your notes: {str(e)}.", ephemeral=True)
+            # Delegate to the shared handler to start the interactive session
+            await self.bot.memory_command_handler.start_interactive_session(interaction)
 
 
         # Admin command to force sync commands

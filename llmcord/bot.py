@@ -17,6 +17,7 @@ from .memory.storage import MemoryStorage
 from .utils.slash_commands import SlashCommandHandler
 from .utils.rate_limit import RateLimiter
 from .reasoning.manager import ReasoningManager
+from .commands.memory_commands import MemoryCommandHandler
 
 
 log = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class LLMCordBot:
         self.reasoning_manager: Optional[ReasoningManager] = None
         self.slash_handler = None
         self.rate_limiter: Optional[RateLimiter] = None
+        self.memory_command_handler: Optional[MemoryCommandHandler] = None
 
     async def initialize(self, config_file="config.yaml"):
         """Initialize the bot and its components."""
@@ -97,6 +99,9 @@ class LLMCordBot:
         self.memory_store = MemoryStorage(self.config, self.llm_provider)
         await self.memory_store.init_db()
         
+        # Setup memory command handler
+        self.memory_command_handler = MemoryCommandHandler(self)
+        log.info("Memory command handler initialized.")
         # Remove memory processor initialization (no longer used)
         # self.memory_processor = MemorySuggestionProcessor(...)
         # Setup event handlers
@@ -182,7 +187,8 @@ class LLMCordBot:
             args = parts[1] if len(parts) > 1 else None
 
             if command == "memory":
-                await self.handle_memory_command(new_msg, args) # Pass original message for context
+                # Delegate to the new handler
+                await self.memory_command_handler.handle_legacy_command(new_msg, args)
                 return
             elif command == "forget":
                 await self.handle_forget_command(new_msg) # Pass original message for context
@@ -964,29 +970,6 @@ class LLMCordBot:
             
             log.info(f"Cache pruned. New size: {len(self.msg_nodes)}")
     
-    async def handle_memory_command(self, message: discord.Message, args: Optional[str]):
-        """Handle the !memory command."""
-        if not self.config.get("memory.enabled", False):
-            await message.reply("Memory feature is disabled.", mention_author=False, delete_after=10)
-            return
-        
-        user_id = message.author.id
-        
-        if args is None:
-            # View memory
-            current_memory = await self.memory_store.get_user_memory(user_id)
-            if current_memory:
-                max_len = self.config.get("memory.max_memory_length", 1500)
-                reply_content = f"Your current notes ({len(current_memory)} chars / {max_len} max):\n```\n{current_memory}\n```"
-                await message.reply(content=reply_content[:2000], mention_author=False)
-            else:
-                await message.reply("You have no saved notes.", mention_author=False)
-        else:
-            # Update memory
-            max_len = self.config.get("memory.max_memory_length", 1500)
-            if len(args) > max_len:
-                await message.reply(f"❌ Error: Notes too long (max {max_len} chars). **Not saved.**", mention_author=False)
-                return
             
             success = await self.memory_store.save_user_memory(user_id, args)
             if success:
