@@ -4,6 +4,17 @@ bot_token: YOUR_DISCORD_BOT_TOKEN # Example: MTA2...
 client_id: YOUR_BOTS_CLIENT_ID    # Example: 106... (For invite link generation)
 status_message:                   # Example: Chatting with LLMs
 
+# Optional: List of custom statuses for the bot to cycle through.
+# If omitted, a default list will be used.
+statuses:
+  - "Thinking about code..."
+  - "Processing user requests..."
+  - "Learning new things..."
+
+# Optional: Time in seconds between status updates (default: 300 = 5 minutes).
+status_update_interval: 300
+
+
 # Message processing settings:
 max_text: 100000  # Max characters per message to consider
 max_images: 5     # Max images per message (if model supports vision)
