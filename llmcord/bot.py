@@ -18,6 +18,7 @@ from .utils.slash_commands import SlashCommandHandler
 from .utils.rate_limit import RateLimiter
 from .reasoning.manager import ReasoningManager
 from .commands.memory_commands import MemoryCommandHandler
+from .status import StatusManager
 
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class LLMCordBot:
         self.memory_processor = None
         self.llm_provider = None
     
+        self.status_manager = None
         self.reasoning_manager: Optional[ReasoningManager] = None
         self.slash_handler = None
         self.rate_limiter: Optional[RateLimiter] = None
@@ -76,14 +78,15 @@ class LLMCordBot:
         # Setup HTTP client
         self.httpx_client = httpx.AsyncClient()
         
-        # Create Discord client
+        # Create Discord client (Activity is now handled by StatusManager)
         intents = discord.Intents.default()
         intents.message_content = True
-        activity = discord.CustomActivity(
-            name=(self.config.get("status_message") or "Just doing some reading on you")[:128]
-        )
-        self.discord_client = discord.Client(intents=intents, activity=activity)
-        
+        self.discord_client = discord.Client(intents=intents) # Remove activity here
+
+        # Setup Status Manager
+        self.status_manager = StatusManager(self.discord_client, self.config)
+        log.info("Status manager initialized.")
+
         # Setup slash command handler
         self.slash_handler = SlashCommandHandler(self)
         self.slash_handler.setup()
@@ -114,6 +117,9 @@ class LLMCordBot:
         """Called when the Discord client is ready."""
         log.info(f'Logged in as {self.discord_client.user.name} ({self.discord_client.user.id})')
         log.info(f'Memory Enabled: {self.config.get("memory.enabled", False)}')
+        # Start status manager
+        if self.status_manager:
+            self.status_manager.start()
 
         # Sync slash commands
         if self.slash_handler:
@@ -152,9 +158,20 @@ class LLMCordBot:
             cooldown = self.rate_limiter.get_cooldown_remaining(new_msg.author.id)
             limit_type = "Global" if reason == "global" else "User"
             log.warning(f"{limit_type} rate limit hit for user {new_msg.author.id}. Cooldown: {cooldown:.2f}s")
+
+            # Set temporary status if it's a global limit
+            if reason == "global" and self.status_manager:
+                global_period = self.config.get("rate_limits.global_period", 60) # Get period from config
+                asyncio.create_task(self.status_manager.set_temporary_status(
+                    "Globally rate limited ⏳",
+                    duration=float(global_period) # Use the configured period for duration
+                ))
+                log.info(f"Set temporary status due to global rate limit (Duration: {global_period}s)")
+
+
             try:
                 await new_msg.reply(
-                    f"⏳ {limit_type} rate limit reached. Please wait {cooldown:.1f} seconds.",
+                    f"⏳ {limit_type} rate limit reached. Please wait {cooldown:.1f} seconds.", # Keep user-specific cooldown in message
                     mention_author=False,
                     delete_after=max(5.0, min(cooldown, 15.0)) # Delete message after cooldown or max 15s
                 )
@@ -390,10 +407,15 @@ class LLMCordBot:
                         log.info(f"Reasoning signal '{self.reasoning_manager.get_reasoning_signal()}' detected in response from {self.config.get('model')}.")
                         reasoning_triggered = True
                         thinking_msg = None
-                        try:
+                        # --- Status Update: Start Thinking ---
+                        if self.status_manager:
+                            await self.status_manager.set_temporary_status("🧠 Thinking deeper...")
+                            log.info("Set temporary status: Thinking deeper...")
+                        # --- End Status Update ---
+                        try: # This try now encompasses the status setting and clearing
                             if self.reasoning_manager.should_notify_user():
                                 try:
-                                    thinking_msg = await new_msg.channel.send("🧠 Thinking deeper...")
+                                    thinking_msg = await new_msg.channel.send("🧠 Thinking deeper...") # Keep user message
                                 except discord.Forbidden: log.warning(f"Missing permissions to send 'Thinking deeper...' message in channel {new_msg.channel.id}")
                                 except Exception as e: log.error(f"Failed to send 'Thinking deeper...' message: {e}")
 
@@ -464,6 +486,11 @@ class LLMCordBot:
                                 except discord.NotFound: pass
                                 except discord.Forbidden: log.warning(f"Missing permissions to delete 'Thinking deeper...' message {thinking_msg.id}")
                                 except Exception as e: log.error(f"Failed to delete 'Thinking deeper...' message {thinking_msg.id}: {e}")
+                            # --- Status Update: Clear Thinking ---
+                            if self.status_manager:
+                                await self.status_manager.clear_temporary_status()
+                                log.info("Cleared temporary status after reasoning.")
+                            # --- End Status Update ---
                 # --- End Multimodel Reasoning Check ---
                 # --- Send Memory Update Confirmation ---
                 if actions_taken and self.config.get("memory.notify_on_update", True):
