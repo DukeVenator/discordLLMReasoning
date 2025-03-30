@@ -16,7 +16,33 @@ This guide covers how to install and run LLMCord.
     cd folder
     ```
 
-2.  **Install Dependencies:**
+2.  **Set Up Discord Bot Application:**
+    Before proceeding, you need to create a bot application in the [Discord Developer Portal](https://discord.com/developers/applications).
+
+    *   **Create Application & Bot:** Create a new application and add a Bot user to it. Note down the **Bot Token** and **Client ID** - you'll need these for `config.yaml` (see Step 4).
+    *   **Enable Privileged Gateway Intents:** Under the "Bot" tab in the Developer Portal, enable the following intents:
+        *   `PRESENCE INTENT` (Optional, but potentially needed for future features)
+        *   `SERVER MEMBERS INTENT` (Optional, but potentially needed for future features)
+        *   `MESSAGE CONTENT INTENT` (**Required**) - This is essential for the bot to read message content.
+    *   **Generate Invite Link & Set Permissions:** Use the OAuth2 URL Generator under the "OAuth2" tab.
+        *   **Scopes:** Select `bot` and `applications.commands`.
+        *   **Bot Permissions:** Select the following permissions (the bot code generates an invite link with the integer `412317273088` which includes these):
+            *   View Channels
+            *   Send Messages
+            *   Send Messages in Threads
+            *   Manage Messages
+            *   Embed Links
+            *   Attach Files
+            *   Read Message History
+            *   Use External Emojis
+            *   Add Reactions
+            *   Manage Threads
+            *   Create Public Threads
+            *   Create Private Threads
+        *   Copy the generated URL and use it to invite the bot to your server(s).
+
+
+3.  **Install Dependencies:**
     It's recommended to use a virtual environment.
     ```bash
     # Create a virtual environment (optional but recommended)
@@ -28,7 +54,7 @@ This guide covers how to install and run LLMCord.
     ```
     This installs the package in "editable" mode, meaning changes you make to the source code will be reflected immediately when you run the bot.
 
-3.  **Configure the Bot:**
+4.  **Configure the Bot:**
     Copy the example configuration file and edit it with your settings (Bot Token, API Keys, etc.).
     ```bash
     cp config-example.yaml config.yaml
@@ -36,7 +62,7 @@ This guide covers how to install and run LLMCord.
     ```
     See the [Configuration Guide](./configuration.md) for details on all options.
 
-4.  **Run the Bot:**
+5.  **Run the Bot:**
     ```bash
     llmcord
     ```
