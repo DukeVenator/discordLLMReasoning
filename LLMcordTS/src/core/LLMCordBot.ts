@@ -21,6 +21,7 @@ import { Config } from '../types/config';
 import { onReady, onMessageCreate } from '@/discord/eventHandlers';
 import { StatusManager } from '@/status/statusManager';
 import { SlashCommandHandler } from '@/discord/slashCommandHandler';
+import { FinishReason } from '@/providers/baseProvider';
 import { RateLimiter } from '@/utils/rateLimiter';
 import { ProviderFactory } from '@/providers/providerFactory';
 import {
@@ -916,7 +917,7 @@ export class LLMCordBot {
     let currentReplyMessage: Message | null = null;
     let lastUpdateTime = 0;
     const updateIntervalMs =
-      this.config.discord?.streamingUpdateIntervalMs ?? 1500; // Default 1.5 seconds
+      this.config.discord?.streamingUpdateIntervalMs ?? 750; // Default 0.75 seconds
     const minContentLengthChange = 50; // Update only if content changed significantly
     const usePlainResponses = this.config.discord?.usePlainResponses ?? false;
     const characterLimit = usePlainResponses ? 2000 : 4096; // Discord limits
@@ -1512,69 +1513,250 @@ export class LLMCordBot {
                   'idle',
                 );
 
-                const reasoningResult =
-                  await this.reasoningManager.generateReasoningResponse(
+                // Edit placeholder to show reasoning is in progress
+                if (currentReplyMessage) {
+                    await currentReplyMessage.edit('🧠 Reasoning...');
+                }
+
+                let accumulatedReasoningResponse = '';
+                let reasoningErrorOccurred = false;
+                let finalReason: FinishReason = 'unknown';
+
+                // Get the stream generator
+                const reasoningStream = this.reasoningManager.generateReasoningResponse(
                     history,
                     signal,
                     userId,
-                  ); // Pass original history
-                if (
-                  reasoningResult.shouldProcess &&
-                  reasoningResult.finalResponse
-                ) {
-                  this.logger.info(
-                    `[${message.id}] Reasoning manager provided a final response.`,
-                  );
-                  // Update finalResponseToUser with the reasoning result
-                  finalResponseToUser = reasoningResult.finalResponse;
+                );
+                const iterator = reasoningStream[Symbol.asyncIterator]();
+                let firstChunkReceived = false;
+
+                // Start a 5-second timer
+                const timeoutId = setTimeout(() => {
+                    if (!firstChunkReceived && currentReplyMessage) {
+                        this.logger.info(`[${message.id}] Reasoning taking longer than 5s, updating status...`);
+                        currentReplyMessage.edit('🧠 Thinking deeper...').catch(editError => {
+                             this.logger.warn(`[${message.id}] Failed to edit message to 'Thinking deeper...': ${editError.message}`);
+                        });
+                    }
+                }, 5000);
+
+
+                // Process the stream using a while loop
+                while (true) {
+                    const result = await iterator.next();
+                    firstChunkReceived = true; // Mark as received once iterator.next() resolves
+
+                    if (result.done) {
+                        clearTimeout(timeoutId); // Clear timeout if stream finishes
+                        this.logger.info(`[${message.id}] Reasoning stream iteration finished.`);
+                        break; // Exit the while loop
+                    }
+
+                    const chunk = result.value;
+                    this.logger.debug(`[${message.id}] Received reasoning chunk. Content length: ${chunk.content?.length ?? 0}, isFinal: ${chunk.isFinal}`);
+
+                    if (chunk.content) {
+                        accumulatedReasoningResponse += chunk.content;
+                        // Throttle intermediate updates
+                        const now = Date.now();
+                        if (currentReplyMessage && accumulatedReasoningResponse.trim() && (now - lastUpdateTime > updateIntervalMs)) {
+                            lastUpdateTime = now;
+                            const contentToShow = accumulatedReasoningResponse.substring(0, characterLimit);
+                            const intermediatePayload = usePlainResponses
+                                ? { content: `${contentToShow} ⚪` }
+                                : { embeds: [new EmbedBuilder().setDescription(`${contentToShow} ⚪`).setColor(0xffa500)] };
+                            try {
+                                await currentReplyMessage.edit(intermediatePayload);
+                                this.logger.debug(`[${message.id}] Updated reasoning stream message ${currentReplyMessage.id}`);
+                            } catch (editError: any) {
+                                this.logger.warn(`[${message.id}] Failed to edit reasoning stream message: ${editError.message}`);
+                                if (editError.code === 429) lastUpdateTime = 0;
+                            }
+                        }
+                    }
+
+                    if (chunk.isFinal) {
+                        clearTimeout(timeoutId); // Clear timeout on final chunk
+                        finalReason = chunk.finishReason ?? 'unknown';
+                        if (finalReason === 'error') {
+                            reasoningErrorOccurred = true;
+                            this.logger.error(`[${message.id}] Reasoning stream finished with error: ${chunk.content || 'Unknown error'}`);
+                            accumulatedReasoningResponse = chunk.content || 'Reasoning failed.';
+                        } else {
+                             this.logger.info(`[${message.id}] Reasoning stream finished with reason: ${finalReason}`);
+                        }
+                        break; // Exit the while loop
+                    }
+                }
+                // Ensure timeout is cleared if loop exits unexpectedly (e.g., error before isFinal)
+                clearTimeout(timeoutId);
+
+                // Update final response based on accumulated stream content
+                if (!reasoningErrorOccurred && accumulatedReasoningResponse.trim()) {
+                     finalResponseToUser = accumulatedReasoningResponse.trim();
+                     this.logger.info(`[${message.id}] Reasoning completed successfully.`);
+                } else if (!reasoningErrorOccurred) {
+                     // Stream finished without error but no content was generated
+                     this.logger.warn(`[${message.id}] Reasoning stream finished successfully but produced no content. Falling back.`);
+                     // Fallback: Remove the reasoning tags from the original response
+                     const startSignal = this.config.reasoning?.signalStart ?? '[REASONING_REQUEST]';
+                     const endSignal = this.config.reasoning?.signalEnd ?? '[/REASONING_REQUEST]';
+                     const escapedStart = startSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                     const escapedEnd = endSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                     const stripRegex = new RegExp(`${escapedStart}[\\s\\S]*?${escapedEnd}`, 'gi');
+                     finalResponseToUser = finalResponseToUser.replace(stripRegex, '').trim(); // Use original finalResponseToUser here
                 } else {
-                  this.logger.info(
-                    `[${message.id}] Reasoning manager processed but did not provide a final response. Falling back.`,
-                  );
-                  // Remove the reasoning tag even if no final response is provided
-                  finalResponseToUser = finalResponseToUser
-                    .replace(
-                      /\[REASONING_REQUEST\][\s\S]*?\[\/REASONING_REQUEST\]/gi,
-                      '',
-                    )
-                    .trim();
+                     // Error occurred during stream, use the error message from the chunk
+                     finalResponseToUser = accumulatedReasoningResponse.trim();
                 }
               } catch (reasoningError) {
                 this.logger.error(
                   `[${message.id}] Error during reasoning process:`,
                   reasoningError,
                 );
-                // Remove the reasoning tag on error
-                finalResponseToUser = finalResponseToUser
-                  .replace(
-                    /\[REASONING_REQUEST\][\s\S]*?\[\/REASONING_REQUEST\]/gi,
-                    '',
-                  )
-                  .trim();
+                // Fallback: Remove only the start tag from the original response on error
+                const startSignal = this.config.reasoning?.signalStart ?? '[REASONING_REQUEST]';
+                finalResponseToUser = finalResponseToUser.replace(startSignal, '').trim();
               }
             } else {
-              this.logger.warn(
-                `[${message.id}] Reasoning signal detected but could not be extracted.`,
-              );
-              // Remove the reasoning tag if extraction fails
-              finalResponseToUser = finalResponseToUser
-                .replace(
-                  /\[REASONING_REQUEST\][\s\S]*?\[\/REASONING_REQUEST\]/gi,
-                  '',
-                )
-                .trim();
+               // --- NEW LOGIC for when ONLY START tag is found ---
+               this.logger.info(
+                   `[${message.id}] Reasoning start tag detected without end tag. Extracting fallback signal.`,
+               );
+               const startSignal = this.config.reasoning?.signalStart ?? '[REASONING_REQUEST]';
+               // Use accumulatedResponse here to ensure we check the raw response before memory tags were stripped
+               const startIndex = accumulatedResponse.indexOf(startSignal);
+
+               if (startIndex !== -1) {
+                   // Use accumulatedResponse here to extract from the raw response
+                   const fallbackSignal = accumulatedResponse.substring(startIndex + startSignal.length).trim();
+
+                   // Proceed with reasoning even if fallbackSignal is empty, as per instructions.
+                   // An empty fallbackSignal means the primary model responded *only* with the start tag.
+                   this.logger.debug(`[${message.id}] Using fallback signal (may be empty): '${fallbackSignal.substring(0, 50)}...'`);
+                   try {
+                       // Edit placeholder to show reasoning is in progress
+                       if (currentReplyMessage) {
+                           await currentReplyMessage.edit('🧠 Reasoning (fallback)...');
+                       }
+
+                       let accumulatedReasoningResponse = '';
+                       let reasoningErrorOccurred = false;
+                       let finalReason: FinishReason = 'unknown';
+
+                       // Get the stream generator
+                       const reasoningStream = this.reasoningManager.generateReasoningResponse(
+                           history, // Assuming 'history' is the correct variable name
+                           fallbackSignal,
+                           userId,
+                       );
+
+                       // Iterate over the stream and update message
+                        let deeperThinkingTimeout: NodeJS.Timeout | null = null;
+                        let deeperThinkingMessageShown = false;
+
+                        if (currentReplyMessage) {
+                            deeperThinkingTimeout = setTimeout(async () => {
+                                // Check if we haven't received any content yet and haven't already shown the message
+                                if (accumulatedReasoningResponse.trim() === '' && !deeperThinkingMessageShown && currentReplyMessage) {
+                                    this.logger.info(`[${message.id}] Fallback reasoning taking longer than 5s. Displaying 'Thinking deeper...'`);
+                                    deeperThinkingMessageShown = true; // Mark as shown
+                                    try {
+                                        // Use consistent payload structure
+                                        const deeperPayload = usePlainResponses
+                                            ? { content: '🤔 Thinking deeper...' }
+                                            : { embeds: [new EmbedBuilder().setDescription('🤔 Thinking deeper...').setColor(0xaaaaaa)] }; // Grey embed
+                                        await currentReplyMessage.edit(deeperPayload);
+                                    } catch (editError) {
+                                        this.logger.error(`[${message.id}] Error editing message for 'Thinking deeper...':`, editError);
+                                    }
+                                }
+                            }, 5000); // 5 seconds timeout
+                        }
+
+
+                       for await (const chunk of reasoningStream) {
+                           this.logger.debug(`[${message.id}] Received fallback reasoning chunk. Content length: ${chunk.content?.length ?? 0}, isFinal: ${chunk.isFinal}`);
+                           if (chunk.content) {
+                               accumulatedReasoningResponse += chunk.content;
+                               // Throttle intermediate updates
+                                const now = Date.now();
+                                if (currentReplyMessage && accumulatedReasoningResponse.trim() && (now - lastUpdateTime > updateIntervalMs)) {
+                                    lastUpdateTime = now;
+                                    // Use consistent payload structure (plain/embed) based on config
+                                    const contentToShow = accumulatedReasoningResponse.substring(0, characterLimit); // Ensure within limit
+                                    const intermediatePayload = usePlainResponses
+                                        ? { content: `${contentToShow} ⚪` } // Add streaming indicator
+                                        : { embeds: [new EmbedBuilder().setDescription(`${contentToShow} ⚪`).setColor(0xffa500)] }; // Orange embed
+                                    try {
+                                        await currentReplyMessage.edit(intermediatePayload);
+                                        this.logger.debug(`[${message.id}] Updated fallback reasoning stream message ${currentReplyMessage.id}`);
+                                    } catch (editError: any) {
+                                        // Log errors during intermediate edits but continue stream
+                                        this.logger.warn(`[${message.id}] Failed to edit fallback reasoning stream message: ${editError.message}`);
+                                        // Reset update time to allow next attempt sooner if rate limited
+                                        if (editError.code === 429) lastUpdateTime = 0;
+                                    }
+                                }
+                            // Clear the 'Thinking deeper...' timeout as soon as the first chunk arrives
+                            if (deeperThinkingTimeout) {
+                                clearTimeout(deeperThinkingTimeout);
+                                deeperThinkingTimeout = null;
+                            }
+
+                           }
+                           // TODO: Handle chunk.toolCalls if needed
+                           if (chunk.isFinal) {
+                               finalReason = chunk.finishReason ?? 'unknown';
+                               if (finalReason === 'error') {
+                                   reasoningErrorOccurred = true;
+                                   this.logger.error(`[${message.id}] Fallback reasoning stream finished with error: ${chunk.content || 'Unknown error'}`);
+                                   accumulatedReasoningResponse = chunk.content || 'Fallback reasoning failed.';
+                               } else {
+                                   this.logger.info(`[${message.id}] Fallback reasoning stream finished with reason: ${finalReason}`);
+                               }
+                               break; // Exit loop on final chunk
+                           }
+                       }
+
+                       // Update final response based on accumulated stream content
+                       if (!reasoningErrorOccurred && accumulatedReasoningResponse.trim()) {
+                            finalResponseToUser = accumulatedReasoningResponse.trim();
+                            this.logger.info(`[${message.id}] Fallback reasoning completed successfully.`);
+                       } else if (!reasoningErrorOccurred) {
+                            // Stream finished without error but no content was generated
+                            this.logger.warn(`[${message.id}] Fallback reasoning stream finished successfully but produced no content. Removing tag.`);
+                            // Fallback: Remove only the start tag from the original response
+                            finalResponseToUser = accumulatedResponse.replace(startSignal, '').trim(); // Use accumulatedResponse (original)
+                       } else {
+                            // Error occurred during stream, use the error message from the chunk
+                            finalResponseToUser = accumulatedReasoningResponse.trim();
+                       }
+
+                   } catch (reasoningError) {
+                       this.logger.error(
+                           `[${message.id}] Error initiating fallback reasoning process:`, // Updated log message
+                           reasoningError,
+                       );
+                       // Fallback: Remove only the start tag from the original response
+                       finalResponseToUser = accumulatedResponse.replace(startSignal, '').trim();
+                   }
+                   // Removed the 'else' block that previously handled empty fallbackSignal incorrectly.
+               } else {
+                   // Should not happen if signalDetected is true, but handle defensively
+                   this.logger.error(`[${message.id}] Signal detected but start index not found. This shouldn't happen. Removing tag.`);
+                   // Fallback: Remove the start tag just in case
+                    finalResponseToUser = finalResponseToUser.replace(startSignal, '').trim();
+               }
             }
           } else {
             this.logger.warn(
               `[${message.id}] Reasoning request rate limited for user ${userId}.`,
             );
-            // Remove the reasoning tag if rate limited
-            finalResponseToUser = finalResponseToUser
-              .replace(
-                /\[REASONING_REQUEST\][\s\S]*?\[\/REASONING_REQUEST\]/gi,
-                '',
-              )
-              .trim();
+            // Fallback: Remove only the start tag if rate limited
+            const startSignal = this.config.reasoning?.signalStart ?? '[REASONING_REQUEST]';
+            finalResponseToUser = finalResponseToUser.replace(startSignal, '').trim();
           }
         }
       }

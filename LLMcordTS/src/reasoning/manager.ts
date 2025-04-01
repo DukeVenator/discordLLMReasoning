@@ -11,13 +11,7 @@ import { ProviderFactory } from '@/providers/providerFactory'; // Added
 import { ChatMessage } from '@/providers/baseProvider'; // Added
 import { BaseProvider } from '@/providers/baseProvider'; // Removed ProviderError import
 
-// Placeholder for the actual reasoning response structure
-interface ReasoningResult {
-    shouldProcess: boolean;
-    reasoningText?: string; // Optional: The raw text from the reasoning model
-    finalResponse?: string; // The final response to send to the user
-    error?: string; // Optional error message
-}
+// Removed unused ReasoningResult interface
 
 /**
  * Manages the optional multi-model reasoning feature.
@@ -77,6 +71,7 @@ export class ReasoningManager {
      * @returns {string | null} The extracted signal text, or null if no signal is found.
      */
     public getReasoningSignal(responseText: string): string | null {
+        logger.debug(`[getReasoningSignal] Input text (first 100 chars): ${responseText.substring(0, 100)}`);
         const startSignal = this.config?.signalStart ?? '[REASONING_REQUEST]';
         const endSignal = this.config?.signalEnd ?? '[/REASONING_REQUEST]';
         // Escape special regex characters in signals
@@ -84,8 +79,11 @@ export class ReasoningManager {
         const escapedEnd = endSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const regex = new RegExp(`${escapedStart}([\\s\\S]*?)${escapedEnd}`, 'i');
 
+        logger.debug(`[getReasoningSignal] Regex used: ${regex}`);
         const match = responseText.match(regex);
         return match && match[1] ? match[1].trim() : null;
+        // The return on line 84 already handles the extraction.
+        // Removed redundant code block.
     }
 
      /**
@@ -115,27 +113,51 @@ export class ReasoningManager {
      * @param {string} userId - The ID of the user initiating the request (for provider selection).
      * @returns {Promise<ReasoningResult>} A promise resolving to the reasoning result.
      */
-    public async generateReasoningResponse(
+    public generateReasoningResponse(
         originalHistory: ChatMessage[],
         reasoningSignal: string,
         userId: string
-    ): Promise<ReasoningResult> {
-        logger.info(`Generating reasoning response for signal: ${reasoningSignal.substring(0, 50)}...`);
+    ) { // Removed explicit return type annotation
+        logger.info(`Starting reasoning stream for signal: ${reasoningSignal.substring(0, 50)}...`);
 
         const modelName = this.config?.reasoningModel;
         if (!modelName) {
             logger.error('Reasoning model name is not configured.');
-            return { shouldProcess: false, error: 'Reasoning model not configured.' };
+            // Yield an error chunk if model is not configured
+            // Throw error instead of yielding if model is not configured
+            logger.error('Reasoning model name is not configured.');
+            throw new Error('Reasoning model not configured.');
         }
 
         let provider: BaseProvider;
+        let providerName: string;
+        let specificModelName: string | undefined; // Store specific model if needed later by the provider instance
+
+        // Parse the modelName string (e.g., "provider/model")
+        if (modelName.includes('/')) {
+            const parts = modelName.split('/', 2);
+            providerName = parts[0]!; // Add non-null assertion
+            specificModelName = parts[1]; // Keep this in case the provider instance needs it
+             logger.debug(`[ReasoningManager] Parsed provider='${providerName}', specific model='${specificModelName}'`);
+        } else {
+            // Assume the whole string is the provider name if no '/' is present
+            // This might need adjustment depending on how providers without specific models are handled
+            providerName = modelName;
+            specificModelName = undefined;
+            logger.warn(`[ReasoningManager] Reasoning model name '${modelName}' has no '/'. Using it directly as provider name.`);
+        }
+
         try {
-            // Use the userId to potentially select a user-specific provider configuration if needed in the future
-            provider = this.providerFactory.getProvider(modelName, userId);
+            // Pass only the parsed providerName to the factory
+            // Pass providerName, specificModelName, and userId correctly
+            provider = this.providerFactory.getProvider(providerName, specificModelName, userId);
         } catch (error) {
             logger.error(`Failed to get reasoning provider '${modelName}': ${error}`);
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            return { shouldProcess: false, error: `Failed to create reasoning provider: ${errorMessage}` };
+            // Yield an error chunk if provider creation fails
+            // Throw error instead of yielding if provider creation fails
+            logger.error(`Failed to get reasoning provider '${providerName}': ${error}`);
+            throw new Error(`Failed to create reasoning provider: ${errorMessage}`);
         }
 
         // --- History Modification ---
@@ -206,44 +228,28 @@ export class ReasoningManager {
 
         try {
             // Pass generationParams as the third argument (options)
-            const stream = provider.generateStream(reasoningHistory, systemPrompt, generationParams);
-            let accumulatedResponse = '';
-            for await (const chunk of stream) {
-                accumulatedResponse += chunk;
-            }
+            // Directly yield chunks from the underlying provider's stream
+            logger.debug(`[ReasoningManager] Yielding stream from provider ${providerName} for model ${specificModelName || 'default'}`);
+            // Return the stream generator directly
+            logger.debug(`[ReasoningManager] Returning stream from provider ${providerName} for model ${specificModelName || 'default'}`);
+            return provider.generateStream(reasoningHistory, systemPrompt, generationParams);
 
-            logger.info(`Reasoning response generated successfully. Length: ${accumulatedResponse.length}`);
+            // Remove accumulation and final response processing logic as chunks are yielded directly
+            // const accumulatedResponse = ''; ... removed ...
 
-            // --- Response Processing ---
-            // Basic processing: Remove the reasoning request tags from the response.
-            const startSignal = this.config?.signalStart ?? '[REASONING_REQUEST]';
-            const endSignal = this.config?.signalEnd ?? '[/REASONING_REQUEST]';
-            // Escape special regex characters in signals
-            const escapedStart = startSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const escapedEnd = endSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const stripRegex = new RegExp(`${escapedStart}[\\s\\S]*?${escapedEnd}`, 'gi');
-
-            const finalResponse = accumulatedResponse.replace(stripRegex, '').trim();
-            logger.debug(`Reasoning response processed (tags stripped). Final length: ${finalResponse.length}`);
-            // --- End Response Processing ---
-
-            return {
-                shouldProcess: true,
-                reasoningText: accumulatedResponse, // Raw response from reasoning model
-                finalResponse: finalResponse, // Processed response
-            };
+            // No longer returning ReasoningResult, yielding StreamChunk instead.
+            // Removal of reasoning tags should happen in the calling function (LLMCordBot)
+            // after the stream is fully processed, if needed.
         } catch (error) {
             logger.error(`Error during reasoning LLM call: ${error}`);
-            let errorMessage = 'An unknown error occurred during the reasoning process.';
-            // Check if error is an instance of Error before accessing message
-            if (error instanceof Error) {
-                // We don't have ProviderError defined, so just use a generic message
-                errorMessage = `Reasoning process error: ${error.message}`;
-            }
-            return {
-                shouldProcess: false, // Indicate failure
-                error: errorMessage,
-            };
+            // Removed unused errorMessage variable declaration
+            // Removed unused if block that assigned to errorMessage
+            // Yield an error chunk if the stream fails
+            // Catch errors during the initial provider.generateStream call setup (if any)
+            // Errors during stream iteration will be handled by the consumer.
+            logger.error(`[ReasoningManager] Error setting up reasoning stream: ${error}`);
+            // Re-throw the error to be caught by the caller
+            throw error;
         }
     }
 }
