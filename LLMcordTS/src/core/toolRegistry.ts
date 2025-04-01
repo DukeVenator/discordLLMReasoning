@@ -15,8 +15,8 @@ export class ToolRegistry {
         console.log(`Loading tools from: ${this.toolsDir}`);
         try {
             const files = await fs.readdir(this.toolsDir);
-            // Look for .js files when running compiled code, .ts when running directly (e.g., ts-node)
-            const fileExtension = __filename.endsWith('.ts') ? 'Tool.ts' : 'Tool.js';
+            // Always look for compiled .js files, assuming a build has been run.
+            const fileExtension = 'Tool.js';
             const toolFiles = files.filter(file => file.endsWith(fileExtension) && !file.includes('.test.')); // Check includes for test files
 
             console.log(`Found potential tool files: ${toolFiles.join(', ')}`);

@@ -97,6 +97,8 @@ export class LLMCordBot {
         // 1. Load Configuration
         try {
             this.config = await loadConfig(); // loadConfig uses its own internal logger for loading phase
+            // DEBUG: Log clientId immediately after assignment
+            this.logger.debug(`[DEBUG Init] Assigned this.config. discord.clientId=${this.config.discord?.clientId}`);
             // Update root logger level based on loaded config
             const configuredLevel = this.config.logging?.level || 'info';
             this.logger.setLevel(configuredLevel);
@@ -183,6 +185,8 @@ export class LLMCordBot {
         }
 
         // 3.6 Initialize Reasoning Manager (if enabled)
+        // DEBUG: Log the reasoning config before the check
+        this.logger.debug(`[DEBUG Init] Checking reasoning config: ${JSON.stringify(this.config.reasoning)}`);
         if (this.config.reasoning?.enabled) {
             try {
                 // Pass the providerFactory instance
@@ -585,7 +589,7 @@ export class LLMCordBot {
             const escapedContent = memoryContent.replace(/```/g, '\\`\\`\\`');
             return `\n\n--- User Memory ---\n${escapedContent}\n--- End Memory ---`;
         } else {
-            return "\n\n--- User Memory ---\nYou have no relevant memories for this conversation.\n--- End Memory ---";
+            return "\n\n--- User Memory ---\nYou have no memories of the user.\n--- End Memory ---"; // Changed default text
         }
     }
 

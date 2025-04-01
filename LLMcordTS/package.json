@@ -9,8 +9,8 @@
     "lint": "eslint . --ext .ts",
     "build": "tsc && tsc-alias",
     "start": "node dist/src/index.js",
-    "dev": "nodemon --watch src --ext ts --exec \"timeout 10s ts-node -r tsconfig-paths/register src/index.ts\"",
-    "dev:once": "timeout 20s ts-node -r tsconfig-paths/register src/index.ts"
+    "dev": "nodemon --watch src --ext ts --exec \"ts-node -r tsconfig-paths/register src/index.ts\"",
+    "dev:once": "timeout 20s ts-node -r tsconfig-paths/register src/index.ts ./config.yaml"
   },
   "keywords": [
     "discord",

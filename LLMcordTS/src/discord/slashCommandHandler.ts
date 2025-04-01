@@ -61,12 +61,11 @@ export class SlashCommandHandler {
      */
     async registerCommands(): Promise<void> {
         const token = this.bot.config.discord.token;
-        // ---> ADDED LOG: Log the value directly from the config object path <---
-        this.bot.logger.debug(`Value from config path 'this.bot.config.discord.clientId': '${this.bot.config.discord.clientId}'`);
-        const clientId = this.bot.config.discord.clientId;
+        // Read clientId directly inside the try block where it's used
+        // const clientId = this.bot.config.discord.clientId; // Removed assignment here
         const guildId = this.bot.config.discord.guildId; // Optional guild ID for testing
 
-        if (!token || !clientId) {
+        if (!token) { // Removed clientId check here as it will be checked before use
             this.bot.logger.error('Cannot register commands: Discord token or client ID is missing in config.');
             return;
         }
@@ -84,8 +83,6 @@ export class SlashCommandHandler {
         this.bot.logger.info(`Attempting to register ${commandsToRegister.length} application (/) commands...`);
         this.bot.logger.debug('Commands to register:', JSON.stringify(commandsToRegister, null, 2));
 
-        // ---> ADDED LOG: Log the clientId just before use <---
-        this.bot.logger.debug(`Using clientId for registration: '${clientId}'`);
 
         try {
             let data: any;
@@ -93,17 +90,25 @@ export class SlashCommandHandler {
                 // Registering guild-specific commands (faster updates for testing)
                 this.bot.logger.info(`Registering commands in guild ${guildId}`);
                 data = await rest.put(
-                    Routes.applicationGuildCommands(clientId, guildId),
+                    // Read clientId directly here
+                    Routes.applicationGuildCommands(this.bot.client.user!.id, guildId), // Use client.user.id directly
                     { body: commandsToRegister },
                 );
                 this.bot.logger.info(`Successfully registered ${data.length} application commands in guild ${guildId}.`);
             } else {
                 // Registering global commands (can take up to an hour to propagate)
                 this.bot.logger.info('Registering global commands.');
-                data = await rest.put(
-                    Routes.applicationCommands(clientId),
-                    { body: commandsToRegister },
-                );
+                // Use client.user.id directly here and log it
+                const clientIdForApi = this.bot.client.user?.id; // Use client.user.id directly
+                if (!clientIdForApi) {
+                    this.bot.logger.error('Client ID from bot.client.user is missing right before global command registration!');
+                    return; // Exit if ID is missing
+                }
+                this.bot.logger.debug(`Using clientId for global registration: '${clientIdForApi}'`); // Log the ID being used
+                data = await rest.put( // Correctly assign result to data
+                    Routes.applicationCommands(clientIdForApi),
+                    { body: commandsToRegister }
+                ); // Close rest.put call correctly
                  this.bot.logger.info(`Successfully registered ${data.length} global application commands.`);
             }
 

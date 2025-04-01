@@ -216,7 +216,7 @@ describe('onMessageCreate Event Handler', () => {
     // --- Filtering Tests (allowDms: false) ---
 
     it('should ignore non-DM, non-mention, non-reply messages when allowDms is false', async () => {
-        mockConfig.allowDms = false;
+        mockConfig.discord.allowDms = false;
         const message = createMockMessage(mockClientInstance, { reference: null });
         vi.mocked(message.mentions.has).mockReturnValue(false);
 
@@ -227,7 +227,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
     it('should process mention messages when allowDms is false', async () => {
-        mockConfig.allowDms = false;
+        mockConfig.discord.allowDms = false;
         const message = createMockMessage(mockClientInstance);
         vi.mocked(message.mentions.has).mockReturnValue(true);
         vi.mocked(checkPermissions).mockReturnValue(true);
@@ -239,7 +239,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
     it('should process reply messages to the bot when allowDms is false', async () => {
-        mockConfig.allowDms = false;
+        mockConfig.discord.allowDms = false;
         // Ensure replied message author ID matches bot ID
         const repliedMessage = createMockMessage(mockClientInstance, { id: 'repliedMessageId', author: mockClientInstance.user! });
         const message = createMockMessage(mockClientInstance, {
@@ -259,7 +259,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
      it('should ignore reply messages to other users when allowDms is false', async () => {
-        mockConfig.allowDms = false;
+        mockConfig.discord.allowDms = false;
         const repliedMessage = createMockMessage(mockClientInstance, { id: 'repliedMessageId', author: createMockUser('anotherUserId') });
         const message = createMockMessage(mockClientInstance, {
             reference: { messageId: 'repliedMessageId', channelId: 'mockChannelId', guildId: 'mockGuildId' }
@@ -277,7 +277,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
     it('should ignore DM messages when allowDms is false', async () => {
-        mockConfig.allowDms = false;
+        mockConfig.discord.allowDms = false;
         // Explicitly set guild to null for DM test
         const message = createMockMessage(mockClientInstance, { guild: null, reference: null }, true);
         vi.mocked(message.mentions.has).mockReturnValue(false); // Ensure no mention
@@ -293,7 +293,7 @@ describe('onMessageCreate Event Handler', () => {
     // --- Filtering Tests (allowDms: true) ---
 
     it('should process DM messages when allowDms is true', async () => {
-        mockConfig.allowDms = true;
+        mockConfig.discord.allowDms = true;
         const message = createMockMessage(mockClientInstance, {}, true); // isDM = true
 
         await onMessageCreate(mockBot, message);
@@ -303,7 +303,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
      it('should process mention messages when allowDms is true', async () => {
-        mockConfig.allowDms = true;
+        mockConfig.discord.allowDms = true;
         const message = createMockMessage(mockClientInstance);
         vi.mocked(message.mentions.has).mockReturnValue(true);
         vi.mocked(checkPermissions).mockReturnValue(true);
@@ -315,7 +315,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
     it('should process reply messages to the bot when allowDms is true', async () => {
-        mockConfig.allowDms = true;
+        mockConfig.discord.allowDms = true;
         // Ensure replied message author ID matches bot ID
         const repliedMessage = createMockMessage(mockClientInstance, { id: 'repliedMessageId', author: mockClientInstance.user! });
         const message = createMockMessage(mockClientInstance, {
@@ -335,7 +335,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
     it('should ignore non-DM, non-mention, non-reply messages even when allowDms is true', async () => {
-        mockConfig.allowDms = true;
+        mockConfig.discord.allowDms = true;
         const message = createMockMessage(mockClientInstance, { reference: null });
         vi.mocked(message.mentions.has).mockReturnValue(false);
 
@@ -453,7 +453,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
     it('should skip permissions check for DM messages', async () => {
-        mockConfig.allowDms = true;
+        mockConfig.discord.allowDms = true;
         const message = createMockMessage(mockClientInstance, {}, true); // DM message
         vi.mocked(mockRateLimiterInstance.checkRateLimit).mockReturnValue([true, 'ok']);
 
@@ -478,7 +478,7 @@ describe('onMessageCreate Event Handler', () => {
     });
 
      it('should handle error if fetching replied message fails and ignore message', async () => {
-        mockConfig.allowDms = false;
+        mockConfig.discord.allowDms = false;
         const message = createMockMessage(mockClientInstance, {
             reference: { messageId: 'deletedMessageId', channelId: 'mockChannelId', guildId: 'mockGuildId' }
         });

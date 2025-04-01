@@ -4,10 +4,12 @@
  */
 import { logger } from './core/logger'; // Import the exported logger instance
 import { LLMCordBot } from './core/LLMCordBot'; // Import the bot class
+// import { getConfig } from './core/config'; // Removed unused import
 
 
 async function main() {
   logger.info('Starting LLMCordTS Bot...');
+
 
 /**
  * Main application function.
@@ -17,6 +19,7 @@ async function main() {
   try {
     // Instantiate the bot
     const bot = new LLMCordBot();
+
 
     // Initialize the bot (loads config, sets up clients, registers handlers)
     await bot.initialize(); // This now handles config loading internally

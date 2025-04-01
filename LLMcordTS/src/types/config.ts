@@ -30,6 +30,8 @@ export interface Config {
     statuses?: string[];
     /** Interval in seconds for updating the bot's status. Defaults to 300. */
     statusUpdateIntervalSeconds?: number;
+    /** Allow the bot to be used in Direct Messages. Defaults to true. */
+    allowDms?: boolean; // Moved inside discord
   };
   llm: {
     /** The default LLM provider to use if not specified elsewhere. Allows custom string values. */
@@ -191,8 +193,7 @@ export interface Config {
     /** Optional path for logging output to a file. */
     filePath?: string; // Optional file logging
   };
-  /** Allow the bot to be used in Direct Messages. Defaults to true. */
-  allowDms?: boolean;
+  // allowDms?: boolean; // Moved inside discord interface
 
   permissions: {
     /** List of Discord Role IDs allowed to use the bot. */

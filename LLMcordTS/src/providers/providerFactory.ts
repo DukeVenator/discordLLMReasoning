@@ -100,11 +100,13 @@ export class ProviderFactory {
             case 'google': // Allow 'google' as an alias
             case 'google-gemini': // Add specific provider name from config
                 // Fetch API key using the camelCased key: providers.googleGemini.apiKey
-                const camelCaseProviderName = _.camelCase(providerName); // Ensure we use camelCase
-                const geminiApiKey = this.config.providers?.[camelCaseProviderName as keyof typeof this.config.providers]?.apiKey;
+                // const camelCaseProviderName = _.camelCase(providerName); // No longer needed for access
+                // Access using the original providerName (e.g., 'google-gemini') which matches the key in config.yaml and Config type
+                const geminiApiKey = this.config.providers?.[providerName as keyof typeof this.config.providers]?.apiKey;
                 if (!geminiApiKey) {
                     // Update error message to reflect the expected camelCase key path
-                    throw new ProviderInitializationError(`Gemini API key is missing in the configuration (providers.${camelCaseProviderName}.apiKey).`);
+                    // Update error message to use the original providerName
+                    throw new ProviderInitializationError(`Gemini API key is missing in the configuration (providers.${providerName}.apiKey).`);
                 }
                 return new GeminiProvider(
                     geminiApiKey,

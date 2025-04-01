@@ -290,9 +290,10 @@ export class GeminiProvider implements BaseProvider {
 
          let functionCallsYielded = false; // Track if any function calls were yielded
          // Log received prompt *after* history mapping, before try block
-         logger.debug(`[GeminiProvider] generateStream received systemPrompt: ${systemPrompt ? `'${systemPrompt.substring(0, 50)}...'` : 'undefined'}`);
+         logger.debug('[GeminiProvider] generateStream received systemPrompt (check value)');
 
          try {
+            logger.debug('[GeminiProvider] Entered try block.');
             // --- Prepare Request for generateContentStream ---
             // Let TypeScript infer the type for the request object
             const request = {
@@ -301,12 +302,19 @@ export class GeminiProvider implements BaseProvider {
             };
 
             // Conditionally add optional properties
-            if (Object.keys(generationConfig).length > 0) {
-                (request as any).generationConfig = generationConfig;
-            }
+            // Prepare the config object (using the key 'config' as per SDK examples)
+            const configForRequest: Record<string, any> = { ...generationConfig }; // Start with base generation params
             if (systemPrompt) {
-                (request as any).systemInstruction = { role: 'system', parts: [{ text: systemPrompt }] };
+                // Add systemInstruction inside the config object, formatted as Part[]
+                configForRequest['systemInstruction'] = [{ text: systemPrompt }]; // Use bracket notation
             }
+
+            // Add the config object to the main request if it has any properties
+            if (Object.keys(configForRequest).length > 0) {
+                (request as any).config = configForRequest; // Use 'config' as the key
+            }
+
+            // Assign tools and toolConfig directly to the request object
             if (toolsForApi) {
                 (request as any).tools = toolsForApi;
             }
@@ -317,12 +325,14 @@ export class GeminiProvider implements BaseProvider {
 
             // Log the complete request being sent
             // Log the system instruction separately for clarity
-            if ((request as any).systemInstruction) {
-                 logger.debug(`[GeminiProvider] Sending systemInstruction: ${JSON.stringify((request as any).systemInstruction)}`);
+            // Log systemInstruction if it exists within the 'config' object
+            if ((request as any).config?.systemInstruction) {
+                 console.log(`[GeminiProvider] Sending systemInstruction (console.log): ${JSON.stringify((request as any).config.systemInstruction)}`);
             } else {
-                 logger.debug(`[GeminiProvider] No systemInstruction being sent.`);
+                 console.log(`[GeminiProvider] No systemInstruction being sent (console.log).`); // Use console.log for consistency
             }
-            logger.debug(`[GeminiProvider] Calling generateContentStream with full request: ${JSON.stringify(request, null, 2)}`);
+            // Re-enable log to check the new structure
+            console.log(`[GeminiProvider] Calling generateContentStream with full request (console.log): ${JSON.stringify(request, null, 2)}`); // Keep this log enabled
 
 
             // --- Call generateContentStream ---
@@ -391,6 +401,7 @@ export class GeminiProvider implements BaseProvider {
             }
 
         } catch (error: any) {
+            logger.error('[GeminiProvider] Entered catch block.'); // Add this log
             // Enhanced error logging
             logger.error('Caught error in Gemini stream.');
             if (error instanceof Error) {

@@ -63,13 +63,13 @@ const createMockMessage = (
 // Uses DeepPartial to allow providing only necessary parts
 const createMockConfig = (permissions: DeepPartial<Config['permissions']> = {}): Config => ({
     // Provide minimal valid structure for the rest of Config
-    discord: { token: 'mock', clientId: 'mock' },
+    discord: { token: 'mock', clientId: 'mock', allowDms: true }, // Add allowDms here
     llm: { defaultProvider: 'mock' },
     memory: { enabled: false, storageType: 'sqlite', sqlite: { path: '' } },
     logging: { level: 'info' },
     rateLimit: { user: { intervalSeconds: 1, maxCalls: 10 } }, // Updated structure
     model: 'mock/mock-model',
-    allowDms: true, // Default to true unless specified otherwise in tests
+    // allowDms: true, // Moved to discord section
     // --- Apply provided permissions ---
     permissions: {
         adminUsers: (permissions.adminUsers ?? []).filter((id): id is string => typeof id === 'string'),
@@ -315,7 +315,7 @@ describe('Permissions Checking (Comprehensive)', () => {
     describe('DM Permissions', () => {
         it('should allow user in DMs if allowDms is true and no specific user/role allows/blocks deny', () => {
             const config = createMockConfig({}); // No specific permissions
-            config.allowDms = true; // Explicitly set for clarity
+            config.discord.allowDms = true; // Explicitly set for clarity
             const message = createMockMessage('dmUser', { isDM: true });
             expect(checkPermissions(message, config)).toBe(true);
         });
@@ -325,7 +325,7 @@ describe('Permissions Checking (Comprehensive)', () => {
             // This test verifies checkPermissions doesn't override that if we called it directly.
             // In practice, the event handler would prevent this call.
             const config = createMockConfig({});
-            config.allowDms = false;
+            config.discord.allowDms = false;
             const message = createMockMessage('dmUser', { isDM: true });
             // checkPermissions itself doesn't check allowDms, it assumes the caller does.
             // So, without user/role restrictions, it should still return true here.
@@ -335,21 +335,21 @@ describe('Permissions Checking (Comprehensive)', () => {
 
         it('should deny user in DMs if user is blocked', () => {
             const config = createMockConfig({ blockUsers: ['dmUserBlocked'] });
-            config.allowDms = true;
+            config.discord.allowDms = true;
             const message = createMockMessage('dmUserBlocked', { isDM: true });
             expect(checkPermissions(message, config)).toBe(false);
         });
 
         it('should allow allowed user in DMs', () => {
             const config = createMockConfig({ allowedUsers: ['dmUserAllowed'] });
-            config.allowDms = true;
+            config.discord.allowDms = true;
             const message = createMockMessage('dmUserAllowed', { isDM: true });
             expect(checkPermissions(message, config)).toBe(true);
         });
 
         it('should deny non-allowed user in DMs if specific user allows are configured', () => {
             const config = createMockConfig({ allowedUsers: ['dmUserAllowed'] });
-            config.allowDms = true;
+            config.discord.allowDms = true;
             const message = createMockMessage('otherDmUser', { isDM: true });
             expect(checkPermissions(message, config)).toBe(false);
         });
@@ -358,7 +358,7 @@ describe('Permissions Checking (Comprehensive)', () => {
             const config = createMockConfig({
                 allowedChannels: ['channel1'], // Configuring this implicitly denies DMs unless user/role allows
             });
-             config.allowDms = true;
+             config.discord.allowDms = true;
             const message = createMockMessage('dmUser', { isDM: true });
             expect(checkPermissions(message, config)).toBe(false);
         });
@@ -368,7 +368,7 @@ describe('Permissions Checking (Comprehensive)', () => {
                 allowedChannels: ['channel1'],
                 allowedUsers: ['dmUserAllowed'], // User allow overrides implicit DM deny
             });
-             config.allowDms = true;
+             config.discord.allowDms = true;
             const message = createMockMessage('dmUserAllowed', { isDM: true });
             expect(checkPermissions(message, config)).toBe(true);
         });
@@ -376,7 +376,7 @@ describe('Permissions Checking (Comprehensive)', () => {
         // Role checks are ignored in DMs
         it('should ignore allowed roles in DMs (user must be explicitly allowed if user allows are set)', () => {
             const config = createMockConfig({ allowedRoles: ['role1'], allowedUsers: ['user1'] });
-             config.allowDms = true;
+             config.discord.allowDms = true;
             const message = createMockMessage('userWithRoleInDM', { roles: ['role1'], isDM: true }); // Role doesn't grant DM access
             expect(checkPermissions(message, config)).toBe(false); // Denied because not user1
 
@@ -386,7 +386,7 @@ describe('Permissions Checking (Comprehensive)', () => {
 
          it('should ignore blocked roles in DMs', () => {
             const config = createMockConfig({ blockRoles: ['roleBlocked'] });
-             config.allowDms = true;
+             config.discord.allowDms = true;
             const message = createMockMessage('userWithBlockedRoleInDM', { roles: ['roleBlocked'], isDM: true });
             expect(checkPermissions(message, config)).toBe(true); // Role block doesn't apply in DMs
         });

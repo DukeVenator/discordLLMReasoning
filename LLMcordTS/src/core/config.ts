@@ -39,6 +39,7 @@ const defaultConfig: DefaultConfig = {
     statuses: ['Serving LLMs', 'Thinking...', '/help for commands'],
     streamingUpdateIntervalMs: 1500, // Default 1.5 seconds
     usePlainResponses: false,
+    allowDms: true, // Add default value (now valid within discord section)
   },
   llm: {
     defaultProvider: 'openai', // Default to OpenAI
@@ -152,27 +153,7 @@ const defaultConfig: DefaultConfig = {
   // extraApiParameters: undefined, // Optional
 };
 
-// --- Helper Function for Key Normalization ---
-
-/**
- * Recursively converts object keys to camelCase.
- * Handles nested objects and arrays of objects.
- * @param obj - The object or array to process.
- * @returns A new object/array with camelCased keys.
- */
-function normalizeObjectKeysToCamelCase(obj: any): any {
-    if (Array.isArray(obj)) {
-        return obj.map(v => normalizeObjectKeysToCamelCase(v));
-    } else if (obj !== null && typeof obj === 'object' && obj.constructor === Object) { // Ensure it's a plain object
-        return Object.keys(obj).reduce((result, key) => {
-            result[_.camelCase(key)] = normalizeObjectKeysToCamelCase(obj[key]);
-            return result;
-        }, {} as Record<string, any>);
-    }
-    return obj;
-}
-
-
+// Key normalization function removed as YAML will now use camelCase directly.
 // --- Configuration Loading Logic ---
 
 /** Stores the loaded and merged configuration object (singleton pattern). */
@@ -208,13 +189,13 @@ export function loadConfig(configPath?: string): Config {
     );
   }
 
-  // --- Normalize User Config Keys to camelCase FIRST ---
-  const userConfigNormalized = normalizeObjectKeysToCamelCase(userConfigRaw);
-  console.log('[ConfigLoad] Normalized user configuration keys to camelCase.');
+  // User config keys are now expected to be camelCase directly in the YAML file.
+  // const userConfigNormalized = normalizeObjectKeysToCamelCase(userConfigRaw); // Removed
+  // console.log('[ConfigLoad] Normalized user configuration keys to camelCase.'); // Removed
 
   // --- Merge Normalized User Config with Defaults ---
-  // Defaults are already camelCase. Merging normalized user config ensures correct overrides.
-  const mergedConfig = merge({}, defaultConfig, userConfigNormalized) as Config;
+  // Defaults are already camelCase. Merging raw user config (expected to be camelCase) ensures correct overrides.
+  const mergedConfig = merge({}, defaultConfig, userConfigRaw); // Merge raw user config directly
   console.log('[ConfigLoad] Merged normalized user config with defaults.');
 
 
@@ -222,19 +203,22 @@ export function loadConfig(configPath?: string): Config {
 
   // --- Environment Variable Overrides ---
   // Apply overrides *after* merging
-  applyEnvironmentVariableOverrides(mergedConfig);
+  // applyEnvironmentVariableOverrides(mergedConfig); // Moved after validation and copy logic
 
 
   // --- Validation ---
   console.log('[ConfigValidate] Checking Discord token...');
-  if (!mergedConfig.discord?.token) {
+  // Check both possible locations due to normalization/merge behavior
+  if (!mergedConfig.discord?.token) { // Check only the correct location
     throw new Error(
-      'Discord token is missing. Please provide `discord.token` (or `discord.token`/`bot_token` in YAML) or LLMCORD_discord__token env var.'
+      'Discord token is missing. Please provide `discord.token` in config.yaml or LLMCORD_discord__token env var.' // Simplified error message
     );
   }
 
   console.log('[ConfigValidate] Checking Discord client ID...');
-  if (!mergedConfig.discord?.clientId) {
+  // Check both possible locations
+  const clientId = mergedConfig.discord?.clientId; // Check only the correct location
+  if (!clientId) {
     throw new Error(
       'Discord client ID is missing. Please provide `discord.clientId` (or `discord.client_id`/`client_id` in YAML) or LLMCORD_discord__clientId env var.'
     );
@@ -242,52 +226,51 @@ export function loadConfig(configPath?: string): Config {
 
   console.log('[ConfigValidate] Checking model setting and provider API key...');
   // Validate API key for the *selected* provider based on the 'model' setting
-  console.log(`[ConfigValidate] mergedConfig.model: ${mergedConfig.model}`);
-  if (mergedConfig.model && typeof mergedConfig.model === 'string') {
-    const modelParts = mergedConfig.model.split('/');
+  console.log(`[ConfigValidate] mergedConfig.model: ${mergedConfig.model}`); // Access top-level model
+  if (mergedConfig.model && typeof mergedConfig.model === 'string') { // Access top-level model
+    const modelParts = mergedConfig.model.split('/'); // Access top-level model
     if (modelParts.length === 2) {
       const providerName = modelParts[0];
       console.log(`[ConfigValidate] Parsed providerName: ${providerName}`);
-      // Access provider config using camelCase key now
-      const camelCaseProviderName = _.camelCase(providerName); // Convert extracted name to camelCase
-      console.log(`[ConfigValidate] Accessing provider config at mergedConfig.providers?.['${camelCaseProviderName}']`); // Use camelCase name for lookup
-      const providerConfig = mergedConfig.providers?.[camelCaseProviderName as keyof typeof mergedConfig.providers];
+      // Access provider config using the providerName directly (expected to be camelCase in YAML)
+      // const camelCaseProviderName = _.camelCase(providerName); // Removed conversion
+      console.log(`[ConfigValidate] Accessing provider config at mergedConfig.providers?.['${providerName}']`); // Use providerName directly, access top-level providers
+      const providerConfig = mergedConfig.providers?.[providerName as keyof typeof mergedConfig.providers]; // Access top-level providers
       // Duplicate declaration removed
       console.log(`[ConfigValidate] Retrieved providerConfig: ${JSON.stringify(providerConfig)}`);
 
-      if (providerName) { // Keep original providerName for checks like needsApiKey
+      if (providerName) {
           const needsApiKey = !['ollama', 'lmstudio', 'vllm', 'oobabooga', 'jan'].includes(providerName);
 
           if (needsApiKey) {
-            // Check camelCased key
             console.log(`[ConfigValidate] Checking API key for provider '${providerName}'...`);
-            // Check camelCased key & ensure providerConfig exists first
+            // Check providerConfig (already accessed using camelCase providerName)
             if (!providerConfig || !providerConfig.apiKey || (typeof providerConfig.apiKey === 'string' && providerConfig.apiKey.startsWith('YOUR_'))) {
                throw new Error(
-                 `API key for the selected provider '${providerName}' is missing or is a placeholder in config.yaml (providers.${providerName}.apiKey) or corresponding env var. Please provide a valid key.`
+                 `API key for the selected provider '${providerName}' is missing or is a placeholder in config.yaml (providers.${providerName}.apiKey) or corresponding env var. Please provide a valid key.` // Corrected path in error message
                );
             }
           }
       }
     } else {
        throw new Error(
-         `Invalid format for 'model' setting: '${mergedConfig.model}'. Expected 'provider_name/model_name'.`
+         `Invalid format for 'model' setting: '${mergedConfig.model}'. Expected 'provider_name/model_name'.` // Access top-level model
        );
     }
   } else {
      throw new Error(
-       `The 'model' setting is missing or not a string in config.yaml or corresponding env var. Please specify the model to use (e.g., 'openai/gpt-4o').`
+       `The 'model' setting is missing or not a string in config.yaml or corresponding env var. Please specify the model to use (e.g., 'openai/gpt-4o').` // Access top-level model
      );
   }
 
   // Validate Brave Search API Key if selected
   console.log('[ConfigValidate] Checking search provider settings...');
-  if (mergedConfig.search?.provider === 'brave') {
+  if (mergedConfig.search?.provider === 'brave') { // Assuming 'search' remains top-level
     console.log(`[ConfigValidate] Search provider: ${mergedConfig.search?.provider}`);
     if (!mergedConfig.search.brave?.apiKey || mergedConfig.search.brave.apiKey.startsWith('YOUR_')) {
       console.log(`[ConfigValidate] Checking Brave API key...`);
       throw new Error(
-        "Search provider is set to 'brave', but a valid API key is missing or is a placeholder in config.yaml (search.brave.apiKey) or LLMCORD_search__brave__apiKey env var. Please provide a valid key."
+        "Search provider is set to 'brave', but a valid API key is missing or is a placeholder in config.yaml (search.brave.apiKey) or LLMCORD_search__brave__apiKey env var. Please provide a valid key." // Path in error message remains the same if search is top-level
       );
     }
   }
@@ -295,8 +278,23 @@ export function loadConfig(configPath?: string): Config {
   // Add more validation as needed
 
   console.log('[ConfigValidate] All checks passed.');
-  return mergedConfig;
+  // Ensure token and client ID are in the expected discord object after validation
+  // Safely copy root botToken if discord object exists and token is missing
+  if (mergedConfig.discord && (mergedConfig as any).botToken && !mergedConfig.discord.token) {
+      mergedConfig.discord.token = (mergedConfig as any).botToken;
+  }
+  // Safely copy root clientId if discord object exists and clientId is missing
+  if (mergedConfig.discord && (mergedConfig as any).clientId && !mergedConfig.discord.clientId) {
+      mergedConfig.discord.clientId = (mergedConfig as any).clientId;
+  }
+
+  // --- Environment Variable Overrides ---
+  // Apply overrides *before* returning the final config
+  applyEnvironmentVariableOverrides(mergedConfig);
+
+  return mergedConfig as Config; // Assert type after validation ensures required fields exist
 }
+
 
 /**
  * Gets the loaded configuration object. Loads it if it hasn't been loaded yet.
@@ -306,11 +304,15 @@ export function loadConfig(configPath?: string): Config {
  * @returns The configuration object.
  */
 export function getConfig(forceReload = false, configPath?: string): Config {
-  if (loadedConfig === null || forceReload) {
+  console.log(`[DEBUG getConfig] Called. forceReload=${forceReload}, configPath=${configPath}, loadedConfig exists=${!!loadedConfig}`); // DEBUG
+  // Only load if it's null. Ignore forceReload and configPath if already loaded to prevent overwrite issues.
+  if (loadedConfig === null) {
+    console.log(`[DEBUG getConfig] Loading/Reloading config...`); // DEBUG
     try {
       loadedConfig = loadConfig(configPath);
+      // Ensure loadConfig uses the provided path if available
     } catch (error) {
-      console.error('CRITICAL: Failed to initialize configuration:', error);
+      console.error(`CRITICAL: Failed to initialize configuration: ${error instanceof Error ? error.message : String(error)}`, error); // Log specific message
       if (process.env['NODE_ENV'] !== 'test') {
         process.exit(1);
       } else {
@@ -318,6 +320,7 @@ export function getConfig(forceReload = false, configPath?: string): Config {
       }
     }
   }
+  console.log(`[DEBUG getConfig] Returning config. discord.clientId=${loadedConfig?.discord?.clientId}`); // DEBUG
   return loadedConfig;
 }
 
@@ -487,6 +490,10 @@ function applyEnvironmentVariableOverrides(config: Record<string, any>): void {
 
           if (finalKey) {
               let currentObject = config;
+              // DEBUG: Log before setting value
+              if (configPath === 'discord.clientId') {
+                  console.log(`[DEBUG EnvOverride] Setting discord.clientId to: ${JSON.stringify(processedValue)} (Type: ${typeof processedValue})`);
+              }
               // Traverse/create parent path
               for (const segment of pathSegments) {
                   if (currentObject[segment] === undefined || typeof currentObject[segment] !== 'object' || currentObject[segment] === null) {

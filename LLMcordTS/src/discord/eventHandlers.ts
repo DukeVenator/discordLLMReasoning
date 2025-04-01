@@ -72,9 +72,9 @@ export async function onMessageCreate(bot: LLMCordBot, message: Message): Promis
         : false;
 
     // ADDED LOG: Track filter conditions
-    bot.logger.debug(`[EventHandler][${message.id}] Filter conditions: isDM=${isDM}, allowDMs=${bot.config.allowDms}, isMentioned=${isMentioned}, isReplyToBot=${isReplyToBot}`);
+    bot.logger.debug(`[EventHandler][${message.id}] Filter conditions: isDM=${isDM}, allowDMs=${bot.config.discord.allowDms}, isMentioned=${isMentioned}, isReplyToBot=${isReplyToBot}`); // Access discord.allowDms
 
-    if (!( (isDM && bot.config.allowDms) || isMentioned || isReplyToBot )) {
+    if (!( (isDM && bot.config.discord.allowDms) || isMentioned || isReplyToBot )) { // Access discord.allowDms
         // ADDED LOG: Track ignored message due to filter
         bot.logger.debug(`[EventHandler][${message.id}] Ignoring message: Did not meet DM/mention/reply criteria.`);
         return; // Ignore messages that don't meet criteria
