@@ -310,6 +310,13 @@ export class GeminiProvider implements BaseProvider {
             if (systemPrompt) {
                 // Add systemInstruction inside the config object, formatted as Part[]
                 configForRequest['systemInstruction'] = [{ text: systemPrompt }]; // Use bracket notation
+           }
+           // Move tools and toolConfig inside configForRequest
+           if (toolsForApi) {
+               configForRequest['tools'] = toolsForApi;
+           }
+           if (toolConfig) {
+               configForRequest['toolConfig'] = toolConfig;
             }
 
             // Add the config object to the main request if it has any properties
@@ -317,13 +324,7 @@ export class GeminiProvider implements BaseProvider {
                 (request as any).config = configForRequest; // Use 'config' as the key
             }
 
-            // Assign tools and toolConfig directly to the request object
-            if (toolsForApi) {
-                (request as any).tools = toolsForApi;
-            }
-            if (toolConfig) {
-                (request as any).toolConfig = toolConfig;
-            }
+            // Removed assignments from top-level request object
 
 
             // Log the complete request being sent

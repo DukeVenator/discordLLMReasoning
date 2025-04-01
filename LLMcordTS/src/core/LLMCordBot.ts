@@ -514,24 +514,25 @@ export class LLMCordBot {
         }
       }
 
-      if (
-        (typeof apiContent === 'string' && apiContent) ||
-        (Array.isArray(apiContent) && apiContent.length > 0)
-      ) {
-        // Assign content directly (type matches now)
-        const messageEntry: ChatMessage = {
-          role: node.role,
-          content: apiContent,
-        };
-        // Add name property if it exists
-        if (userName) {
-          messageEntry.name = userName;
-        }
-        llmHistory.push(messageEntry);
+      // Determine if the message has actual content (text or parts)
+      const hasContent = (typeof apiContent === 'string' && apiContent.trim()) || (Array.isArray(apiContent) && apiContent.length > 0);
+
+      // Push user messages ONLY if they have actual content.
+      // Push ALL assistant messages to maintain conversation flow, using extracted embed text or empty string.
+      if (node.role === 'assistant' || (node.role === 'user' && hasContent)) {
+           const messageEntry: ChatMessage = {
+               role: node.role,
+               // Use the determined apiContent (could be embed text or empty string for assistant)
+               content: apiContent // apiContent is already guaranteed to be string or Part[] here
+           };
+           if (userName) { messageEntry.name = userName; } // Add name for user messages if supported
+           llmHistory.push(messageEntry);
+           // this.logger.debug(`[History] Pushing to llmHistory: role=${messageEntry.role}, content=${typeof messageEntry.content === 'string' ? messageEntry.content.substring(0,30)+'...' : '[Parts]'}`); // Removed diagnostic log
       } else if (isNewNode) {
-        this.logger.debug(
-          `[History] Node ${messageId} resulted in empty content after formatting.`,
-        );
+           // Log only if a new user node is skipped due to no content
+           this.logger.debug(
+             `[History] User node ${messageId} resulted in empty content after formatting. Skipping.`,
+           );
       }
 
       // --- Collect Warnings ---
