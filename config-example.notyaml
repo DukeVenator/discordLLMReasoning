@@ -1,0 +1,202 @@
+# Discord settings:
+
+bot_token: YOUR_DISCORD_BOT_TOKEN # Example: MTA2...
+client_id: YOUR_BOTS_CLIENT_ID    # Example: 106... (For invite link generation)
+status_message:                   # Example: Chatting with LLMs
+
+# Optional: List of custom statuses for the bot to cycle through.
+# If omitted, a default list will be used.
+statuses:
+  - "Thinking about code..."
+  - "Processing user requests..."
+  - "Learning new things..."
+
+# Optional: Time in seconds between status updates (default: 300 = 5 minutes).
+status_update_interval: 300
+
+
+# Message processing settings:
+max_text: 100000  # Max characters per message to consider
+max_images: 5     # Max images per message (if model supports vision)
+max_messages: 25  # Max messages in conversation history
+
+use_plain_responses: false # Set to true for plain text replies instead of embeds
+allow_dms: true          # Allow the bot to be used in Direct Messages
+
+# Permissions: Control access based on users, roles, channels, and categories.
+# Leave lists empty or omit the key entirely to not apply that specific restriction/allowance.
+# Precedence: Admin > User Block > Role Block > Channel Block > Category Block > Channel Allow > Category Allow > Role Allow > User Allow
+permissions:
+  # Users with these IDs bypass all other permission checks.
+  admin_users: [] # e.g., [123456789012345678]
+
+  # Users/Roles explicitly blocked from using the bot. These take priority over allow lists.
+  block_users: [] # e.g., [876543210987654321]
+  block_roles: [] # e.g., [765432109876543210]
+
+  # Channels/Categories explicitly blocked. Channel blocks override category allows/blocks.
+  blocked_channels: [] # e.g., [112233445566778899]
+  blocked_categories: [] # e.g., [998877665544332211]
+
+  # If any of the following 'allowed' lists are defined, the bot is *only* allowed there (unless blocked above).
+  # If all 'allowed' lists are empty/undefined, the bot is allowed everywhere not explicitly blocked.
+
+  # Channels/Categories where the bot is allowed. Channel allows override category blocks.
+  allowed_channels: [] # e.g., [223344556677889900]
+  allowed_categories: [] # e.g., [887766554433221100]
+
+  # Roles/Users allowed to use the bot (only checked if not blocked and if channel/category allows pass).
+  allowed_roles: [] # e.g., [334455667788990011]
+  allowed_users: [] # e.g., [445566778899001122]
+
+
+# Rate Limiting: Control how often users can interact with the bot.
+# Corresponds to the `rateLimit` section in the TypeScript Config type.
+rateLimit:
+  # User-specific rate limits (required)
+  user:
+    intervalSeconds: 60 # Time window in seconds
+    maxCalls: 5         # Max requests per user within the window
+
+  # Global rate limits (optional) - Uncomment and configure if needed
+  # global:
+  #   intervalSeconds: 60 # Time window in seconds
+  #   maxCalls: 100       # Max total requests across all users within the window
+
+# --- Persistent Memory Settings ---
+memory:
+  enabled: true                       # Set to true to enable persistent memory
+  database_path: "llmcord_memory.db"  # Path to the SQLite database file
+  # How to inject memory into the prompt:
+  # "system_prompt_prefix": Adds memory before the main system prompt. (Recommended)
+  # "user_message_prefix": Adds memory as a separate user message after the system prompt.
+  prompt_injection_method: "system_prompt_prefix"
+  memory_prefix: "[User Memory/Notes]:\n" # Text prepended to the memory content in the prompt
+  max_memory_length: 1500             # DEPRECATED: Use memory.condensation.maxTokens instead for limit checking
+  maxTokensPerMessage: 500            # Approx token limit per message stored in history (used by history builder)
+    maxImages: 2                      # Max images to include in history sent to LLM (if model supports vision)
+
+
+  # --- Memory Condensation Settings (TypeScript Implementation) ---
+  condensation:
+    enabled: false                      # Set to true to enable automatic memory condensation
+    # Optional: Specify a provider/model for condensation (defaults to main provider/model if omitted)
+    # provider: "openai"                # e.g., openai, google-gemini, ollama
+    # model: "gpt-3.5-turbo"            # e.g., gpt-3.5-turbo, gemini-1.0-pro, llama3:8b
+    # Optional: Max tokens for the memory storage before condensation is triggered.
+    # Uses character count / 4 as estimate currently.
+    maxTokens: 2000                   # Example: Trigger condensation if memory exceeds ~2000 tokens
+    # Optional: Target token count for fallback truncation if condensation LLM call fails. Defaults to 75% of maxTokens.
+    fallbackTruncateTokens: 1500      # Example: Truncate to ~1500 tokens on failure
+    # Optional: Override temperature for the condensation LLM call.
+    # temperature: 0.5
+    # Optional: Custom system prompt for the condensation LLM.
+    # prompt: "Summarize the key points of this conversation history concisely:"
+    # Optional: Interval in minutes (currently unused by SQLiteMemoryStorage trigger, might be used later for periodic checks)
+    intervalMinutes: 60
+
+# --- Reasoning Settings (TypeScript Implementation) ---
+# Corresponds to the `reasoning` section in the TypeScript Config type.
+# Allows the bot to use a potentially different/more powerful model for complex tasks.
+reasoning:
+  enabled: false                      # Set to true to enable reasoning model calls
+  # Optional: Specify provider/model for reasoning (defaults to main provider/model if omitted)
+  # provider: "openai"
+  reasoningModel: "openai/gpt-4o"     # Example: The model to use for reasoning tasks
+  # Optional: Custom system prompt for the reasoning LLM.
+  # systemPrompt: "You are an advanced reasoning assistant..."
+  # Optional: Customize the start/end signals for reasoning requests in the LLM response.
+  # signalStart: "[REASONING_REQUEST]"
+  # signalEnd: "[/REASONING_REQUEST]"
+  # Optional: Rate limiting specifically for reasoning calls.
+  rateLimit:
+    intervalSeconds: 300              # Time window in seconds
+    maxCalls: 2                       # Max reasoning calls per user within the window
+
+# --- Multimodel Settings (Optional - Python Legacy, use Reasoning above for TS) ---
+# Allows the bot to switch to a more powerful model for complex tasks.
+multimodel:
+  enabled: false              # Set to true to enable switching to the reasoning model
+  reasoning_model: "openai/gpt-4o" # The model to use for complex reasoning tasks (e.g., openai/gpt-4o, google-gemini/gemini-1.5-pro-latest)
+  reasoning_signal: "[USE_REASONING_MODEL]" # The exact text the default model should output to trigger the switch
+  notify_user: true           # Set to true to send a "Thinking deeper..." message when switching
+  # Optional: Override API parameters specifically for the reasoning model
+  reasoning_extra_api_parameters:
+    # max_tokens: 8192
+    # temperature: 0.5
+  reasoning_signal: "[USE_REASONING_MODEL]" # The exact text the default model should output to trigger the switch
+  notify_user: true           # Set to true to send a "Thinking deeper..." message when switching
+
+# LLM settings:
+
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key: YOUR_OPENAI_API_KEY # sk-...
+    # Optional: Generation temperature (e.g., 0.7). Overrides defaultTemperature.
+    # temperature: 0.7
+    # Optional: Maximum tokens for the generated response. Overrides defaultMaxTokens.
+    # max_output_tokens: 2048
+    # Optional: Provider-specific parameters to pass directly to the API.
+    # Example for OpenAI:
+    # extraParams:
+    #   frequency_penalty: 0.5
+    #   presence_penalty: 0.2
+  x-ai:
+    base_url: https://api.x.ai/v1
+    api_key: YOUR_XAI_API_KEY
+  mistral:
+    base_url: https://api.mistral.ai/v1
+    api_key: YOUR_MISTRAL_API_KEY
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    api_key: YOUR_GROQ_API_KEY # gsk_...
+  openrouter: # Can proxy many models including Gemini, useful for OpenAI format
+    base_url: https://openrouter.ai/api/v1
+    api_key: YOUR_OPENROUTER_API_KEY # sk-or-...
+  google-gemini: # Uses the native Google Gemini API (requires google-generativeai library)
+    api_key: YOUR_GOOGLE_API_KEY # From Google AI Studio / GCP
+    # Optional: Generation temperature (e.g., 0.7). Overrides defaultTemperature.
+    # temperature: 0.7
+    # Optional: Maximum tokens for the generated response. Overrides defaultMaxTokens.
+    # max_output_tokens: 2048
+    # Optional: Provider-specific parameters to pass directly to the API.
+    # Example for Gemini:
+    # extraParams:
+    #   top_k: 40
+    #   top_p: 0.95
+    # base_url: Not needed, handled by google-generativeai library
+  ollama:
+    base_url: http://localhost:11434/v1
+    # api_key: Not typically required for local Ollama
+    # Optional: Generation temperature (e.g., 0.7). Overrides defaultTemperature.
+    # temperature: 0.7
+    # Optional: Maximum tokens for the generated response. Overrides defaultMaxTokens.
+    # max_output_tokens: 2048
+    # Optional: Provider-specific parameters to pass directly to the API.
+    # Example for Ollama:
+    # extraParams:
+    #   mirostat: 1
+    #   mirostat_tau: 5.0
+    #   mirostat_eta: 0.1
+    #   num_ctx: 4096 # Context window size
+  lmstudio:
+    base_url: http://localhost:1234/v1
+  vllm:
+    base_url: http://localhost:8000/v1
+  oobabooga:
+    base_url: http://localhost:5000/v1
+  jan:
+    base_url: http://localhost:1337/v1
+
+# Select the provider and model. Format: provider_name/model_name
+# Examples: openai/gpt-4o, google-gemini/gemini-1.5-pro-latest, ollama/llama3
+model: google-gemini/gemini-1.5-pro-latest
+
+# Default system prompt. Will have date and user ID info appended.
+system_prompt: >
+  You are a helpful Discord chatbot.
+  Respond conversationally. Format replies using Discord markdown.
+
+  # Memory instructions are added dynamically by the bot code if memory.enabled is true.
+  # Do not add them here.

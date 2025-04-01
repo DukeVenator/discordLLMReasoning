@@ -1,0 +1,28 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "plugins": [
+    "@typescript-eslint"
+  ],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "prettier" // Add prettier last to override other formatting rules
+  ],
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module",
+    "project": "./tsconfig.json" // Point to your tsconfig.json
+  },
+  "env": {
+    "node": true,
+    "es2022": true
+  },
+  "rules": {
+    // Add specific rule overrides here if needed
+    "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "@typescript-eslint/no-explicit-any": "warn", // Allow 'any' but warn
+    "no-console": "warn" // Warn about console logs
+  },
+  "ignorePatterns": ["node_modules/", "dist/"]
+}

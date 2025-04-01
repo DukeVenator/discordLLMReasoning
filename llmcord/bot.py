@@ -805,7 +805,7 @@ class LLMCordBot:
         if system_prompt_text:
             system_prompt_extras = [
                 f"Today's date: {dt.now().strftime('%B %d %Y')}.",
-                "My owner and primary administrator is Duke_Venator (Discord User ID: 155531668864630785)."
+                "My owner and primary administrator is Duke_Venator (Discord User ID: 155531668864630785). Ensure that the UserID is an exact match if they claim to be Duke_Venator"
             ]
             
             if self.llm_provider.supports_usernames:
@@ -826,7 +826,9 @@ class LLMCordBot:
                 memory_method = self.config.get("memory.prompt_injection_method", "system_prompt_prefix")
                 
                 if memory_method == "system_prompt_prefix":
-                    final_system_prompt = f"{memory_prefix}{user_memory}\n\n{final_system_prompt}" if final_system_prompt else f"{memory_prefix}{user_memory}"
+                    # Format the prefix to include the User ID
+                    formatted_prefix = f"{memory_prefix.strip()} (User ID: {user.id}):\n"
+                    final_system_prompt = f"{formatted_prefix}{user_memory}\n\n{final_system_prompt}" if final_system_prompt else f"{formatted_prefix}{user_memory}"
             # Inject Memory Instructions if memory is enabled
             memory_instructions = (
                 "\n\n**Memory Instructions:**\n"
