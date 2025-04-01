@@ -195,6 +195,7 @@ export class GeminiProvider implements BaseProvider {
 
                         const finalParts = textPart ? [textPart, geminiFunctionCallPart] : [geminiFunctionCallPart];
                         logger.debug(`Mapping assistant message with functionCall request: ${functionCallPart.functionCall.name}`);
+                        logger.debug('[GeminiMapper] Mapping assistant message with function call.');
                         return { role: 'model', parts: finalParts };
                     } else {
                         // No functionCall part found, map regular content (text/images)
@@ -218,8 +219,10 @@ export class GeminiProvider implements BaseProvider {
 
                         if (parts.length === 0) {
                              logger.warn(`Assistant message resulted in no valid parts after processing.`);
+                             logger.warn('[GeminiMapper] Assistant message resulted in no valid parts.');
                              return null;
                         }
+                        logger.debug('[GeminiMapper] Mapping assistant message with regular content.');
                         return { role: 'model', parts: parts };
                     }
                 } else if (msg.role === 'system') {
