@@ -6,6 +6,9 @@ const defaultLogLevel: LevelWithSilent = 'info';
 
 export interface LoggerContext {
     name?: string;
+    messageId?: string; // Optional: Discord message ID
+    userId?: string;    // Optional: Discord user ID
+    channelId?: string; // Optional: Discord channel ID
     // Add other context fields as needed
 }
 

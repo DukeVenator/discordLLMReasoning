@@ -10,10 +10,10 @@ import {
   Partials,
   Message,
   // ChannelType, // Removed unused import
-  EmbedBuilder,
-  TextChannel,
-  DMChannel,
-  NewsChannel,
+  // EmbedBuilder, // Removed - No longer used directly
+  // TextChannel, // Removed - No longer used directly
+  // DMChannel, // Removed - No longer used directly
+  // NewsChannel, // Removed - No longer used directly
 } from 'discord.js'; // Consolidated imports + DMChannel, NewsChannel
 import axios, { AxiosInstance } from 'axios';
 import { loadConfig } from './config';
@@ -41,6 +41,7 @@ import { MemoryCommandHandler } from '@/commands/handlers/memoryCommandHandler';
 import { ToolRegistry } from './toolRegistry'; // Import ToolRegistry
 import { MessageProcessor } from '@/processing/MessageProcessor'; // Added
 import { IMessageNode } from '@/types/message'; // Removed unused IWarning import
+import { ResponseManager } from '@/discord/ResponseManager'; // Added for response handling
 
 // Placeholder imports for future components
 // import { ProviderManager } from '../providers/providerManager';
@@ -487,13 +488,29 @@ export class LLMCordBot {
    * @returns {Promise<void>}
    */
   public async processMessage(message: Message): Promise<void> {
-    this.logger.info(
-      `Processing message ID ${message.id} from ${message.author.tag} in channel ${message.channelId}`,
+    const messageLogger = this.logger.getSubLogger({ // Create logger specific to this message processing
+        name: 'MessageProcessing',
+        messageId: message.id,
+        userId: message.author.id,
+        channelId: message.channelId,
+    });
+    messageLogger.info(
+      `Processing message from ${message.author.tag} in channel ${message.channelId}`,
     );
+
+    // --- Instantiate Response Manager ---
+    const responseManager = new ResponseManager({
+        originalMessage: message,
+        config: this.config,
+        logger: messageLogger, // Pass the message-specific logger
+        initialContent: '🧠 Thinking...', // Or fetch from config if needed
+    });
 
     // --- Build History ---
     // Use the messageProcessor instance to build history
+    messageLogger.debug('Building message history...');
     const { history, warnings: userWarnings } = await this.messageProcessor.buildMessageHistory(message); // Updated call and return type handling
+    messageLogger.debug(`History built. Length: ${history.length}, Warnings: ${userWarnings.length}`);
 
     // --- Fetch User Memory (Consolidated) ---
     const userId = message.author.id;
@@ -501,12 +518,12 @@ export class LLMCordBot {
     if (this.config.memory.enabled && this.memoryStorage) {
       try {
         userMemoryContent = await this.memoryStorage.getMemory(userId);
-        this.logger.debug(
-          `[${message.id}] Fetched memory for user ${userId}. Length: ${userMemoryContent?.length ?? 0}`,
+        messageLogger.debug(
+          `Fetched memory for user ${userId}. Length: ${userMemoryContent?.length ?? 0}`,
         );
       } catch (memError) {
-        this.logger.error(
-          `[${message.id}] Failed to retrieve memory for user ${userId}:`,
+        messageLogger.error(
+          `Failed to retrieve memory for user ${userId}:`,
           memError,
         );
         // Add warning as an IWarning object
@@ -523,33 +540,30 @@ export class LLMCordBot {
 
     // --- Abort if no processable content after history build ---
     // Check history *after* potential memory injection
-    if (history.filter((msg) => msg.role !== 'system').length === 0) {
-      // Check if only system/memory messages remain
-      this.logger.warn(
-        `[${message.id}] No user/assistant content found in message or its history (after memory injection). Aborting.`,
+    if (history.filter((msg) => msg.role === 'user' || msg.role === 'assistant').length === 0) {
+      // Check if only user/assistant messages remain (system/tool roles are ok)
+      messageLogger.warn(
+        `No user/assistant content found in message or its history. Aborting.`,
       );
       if (userWarnings.length > 0) { // Check length of array
         try {
           // Combine warnings with the reason for stopping
           const stopReason = 'No message content to process';
-          // Format warnings from IWarning objects
-          const combinedWarnings = userWarnings.map(w => w.message).join(', ');
-          await message.reply(
-            `Processing stopped: ${stopReason}${combinedWarnings ? ` (${combinedWarnings})` : ''}`,
-          );
+          const combinedWarnings = userWarnings.map(w => w.message).join('\n'); // Use newline for multiple warnings
+          await responseManager.handleError(new Error(`Processing stopped: ${stopReason}${combinedWarnings ? `\n(${combinedWarnings})` : ''}`));
         } catch (replyError) {
-          this.logger.error(
-            `[${message.id}] Failed to send warning reply:`,
+          messageLogger.error(
+            `Failed to send warning reply via ResponseManager:`,
             replyError,
           );
         }
       } else {
         try {
           // Send a simple notification if there were no other warnings
-          await message.reply('Processing stopped: No message content found.');
+          await responseManager.handleError(new Error('Processing stopped: No message content found.'));
         } catch (replyError) {
-          this.logger.error(
-            `[${message.id}] Failed to send stop notification reply:`,
+          messageLogger.error(
+            `Failed to send stop notification reply via ResponseManager:`,
             replyError,
           );
         }
@@ -565,8 +579,9 @@ export class LLMCordBot {
       'You are LLMCord, a helpful Discord bot.';
 
     // --- Format Memory Separately ---
-    const formattedMemoryForPrompt =
-      this._formatMemoryForSystemPrompt(userMemoryContent);
+    const formattedMemoryForPrompt = this.config.memory.enabled
+      ? this._formatMemoryForSystemPrompt(userMemoryContent)
+      : ''; // Don't include memory prompt section if disabled
     this.logger.debug(`[${message.id}] Formatted memory for prompt.`);
 
     // --- Prepare Instructions ---
@@ -582,6 +597,7 @@ export class LLMCordBot {
         '**IMPORTANT:** Use `[MEM_REPLACE]` for *any* change or deletion requested by the user. Find the exact text and provide the new text (or leave it empty to delete).\\n' +
         'Only include ONE instruction per response, if any. Do not mention these instructions in your conversational reply.';
       instructions += memoryInstructions;
+      messageLogger.debug(`Appended memory instructions.`);
       this.logger.debug(`[${message.id}] Appended memory instructions.`);
     }
 
@@ -595,7 +611,7 @@ export class LLMCordBot {
         `or if the user asks you to think deeply, please respond *only* with the exact text \\\`${reasoningSignal}\\\` and nothing else. ` +
         `Otherwise, answer the request directly.`;
       instructions += signalInstruction;
-      this.logger.debug(
+      messageLogger.debug(
         `[${message.id}] Appended reasoning trigger instructions.`,
       );
     }
@@ -605,197 +621,10 @@ export class LLMCordBot {
 
     // --- Call LLM & Stream Response ---
     let accumulatedResponse = '';
-    let replyMessages: Message[] = []; // Track all messages sent for this response
-    let currentReplyMessage: Message | null = null;
-    let lastUpdateTime = 0;
-    const updateIntervalMs =
-      this.config.discord?.streamingUpdateIntervalMs ?? 750; // Default 0.75 seconds
-    const minContentLengthChange = 50; // Update only if content changed significantly
-    const usePlainResponses = this.config.discord?.usePlainResponses ?? false;
-    const characterLimit = usePlainResponses ? 2000 : 4096; // Discord limits
+    // Removed replyMessages, currentReplyMessage, lastUpdateTime, updateIntervalMs, minContentLengthChange, usePlainResponses, characterLimit
+    // These are now managed by ResponseManager
     let finalResponseToUser = ''; // Declare here to ensure scope
-
-    const updateDiscordResponse = async (
-      content: string,
-      isFinal: boolean = false,
-    ): Promise<void> => {
-      const now = Date.now();
-      // Throttle updates unless it's the final one
-      if (!isFinal && now - lastUpdateTime < updateIntervalMs) {
-        return;
-      }
-      // Only update if content actually changed significantly (or it's the final update)
-      if (
-        !isFinal &&
-        content.length -
-          (
-            currentReplyMessage?.content ??
-            currentReplyMessage?.embeds[0]?.description ??
-            ''
-          ).length <
-          minContentLengthChange
-      ) {
-        return;
-      }
-
-      lastUpdateTime = now;
-      let contentToSend = content;
-      let remainingContent: string | null = null;
-
-      if (contentToSend.length > characterLimit) {
-        remainingContent = contentToSend.substring(characterLimit);
-        contentToSend = contentToSend.substring(0, characterLimit);
-        this.logger.warn(
-          `[${message.id}] Response chunk exceeded limit (${characterLimit}). Splitting message.`,
-        );
-      }
-
-      // Define messagePayload outside the try block to ensure scope for catch block
-      let messagePayload: any; // Use 'any' for flexibility or define a specific type
-
-      try {
-        const embed = new EmbedBuilder();
-        const descriptionText = contentToSend || '...'; // Use placeholder if empty
-        const finalDescription = isFinal
-          ? descriptionText
-          : `${descriptionText} ⚪`;
-        const finalColor = isFinal ? 0x00ff00 : 0xffa500; // Green for final, Orange for streaming
-
-        if (isFinal && !contentToSend.trim()) {
-          // Handle final empty message case
-          this.logger.debug(
-            `[${message.id}] Final response is empty, sending completion indicator.`,
-          );
-          messagePayload = usePlainResponses
-            ? { content: '✅' }
-            : { embeds: [embed.setDescription('✅').setColor(0x00ff00)] }; // Green check
-        } else {
-          // Regular message payload
-          messagePayload = usePlainResponses
-            ? { content: contentToSend || '...' } // Send placeholder if empty
-            : {
-                embeds: [
-                  embed.setDescription(finalDescription).setColor(finalColor),
-                ],
-              };
-        }
-
-        if (!currentReplyMessage) {
-          // Send initial message
-          // Use messagePayload here
-          currentReplyMessage = await message.reply(messagePayload);
-          replyMessages.push(currentReplyMessage);
-          this.logger.debug(
-            `[${message.id}] Sent initial streaming message ${currentReplyMessage.id}`,
-          );
-        } else {
-          // Edit existing message
-          await currentReplyMessage.edit(messagePayload);
-          this.logger.debug(
-            `[${message.id}] Edited streaming message ${currentReplyMessage.id}`,
-          );
-        }
-
-        // Handle content that exceeded the limit by sending a new message
-        if (remainingContent !== null) {
-          // Check if the channel is text-based and has the 'send' method (type guard)
-          if (
-            message.channel.isTextBased() &&
-            'send' in message.channel &&
-            remainingContent
-          ) {
-            // Ensure remainingContent is not null/empty
-            const followUpEmbed = new EmbedBuilder();
-            const followUpDescription = isFinal
-              ? remainingContent
-              : `${remainingContent} ⚪`;
-            const followUpColor = isFinal ? 0x00ff00 : 0xffa500;
-
-            const followUpPayload = usePlainResponses
-              ? { content: remainingContent } // Plain text doesn't get indicators/colors
-              : {
-                  embeds: [
-                    followUpEmbed
-                      .setDescription(followUpDescription)
-                      .setColor(followUpColor),
-                  ],
-                };
-            try {
-              // Send the rest in a new message and update currentReplyMessage
-              // Type assertion might still be needed if 'send' isn't fully narrowed
-              const followUpMessage = await (
-                message.channel as TextChannel | DMChannel | NewsChannel
-              ).send(followUpPayload);
-              currentReplyMessage = followUpMessage; // Update the message being edited
-              replyMessages.push(followUpMessage);
-              this.logger.debug(
-                `[${message.id}] Sent follow-up streaming message ${followUpMessage.id}`,
-              );
-            } catch (sendError) {
-              this.logger.error(
-                `[${message.id}] Failed to send follow-up message:`,
-                sendError,
-              );
-              // Decide how to handle this - maybe truncate? For now, log and potentially lose data.
-            }
-          } else {
-            this.logger.warn(
-              `[${message.id}] Cannot send follow-up message in channel type: ${message.channel.type} (not text-based or lacks send method)`,
-            );
-            // Log and potentially lose data if channel doesn't support send
-          }
-        }
-      } catch (error: any) {
-        if (error.code === 50035 && error.message.includes('longer than')) {
-          // DiscordAPIError[50035]: Invalid Form Body (content: Must be 2000 or fewer in length.)
-          this.logger.warn(
-            `[${message.id}] Content exceeded limit during edit/reply, likely race condition or calculation error. Truncating slightly.`,
-          );
-          // Attempt to truncate and retry ONCE. More complex retry logic could be added.
-          try {
-            const slightlyTruncatedContent = contentToSend.substring(
-              0,
-              characterLimit - 10,
-            ); // Shave off a bit more
-            const truncatedPayload = usePlainResponses
-              ? { content: slightlyTruncatedContent || '...' }
-              : {
-                  embeds: [
-                    new EmbedBuilder().setDescription(
-                      slightlyTruncatedContent || '...',
-                    ),
-                  ],
-                };
-            if (currentReplyMessage) {
-              // Add type assertion here as well for safety
-              await (currentReplyMessage as Message).edit(truncatedPayload);
-            } else {
-              // This case is less likely but possible if initial reply failed due to length
-              currentReplyMessage = await message.reply(truncatedPayload);
-              replyMessages.push(currentReplyMessage);
-            }
-          } catch (retryError) {
-            this.logger.error(
-              `[${message.id}] Failed to edit/reply even after truncating:`,
-              retryError,
-            );
-          }
-        } else if (error.code === 429) {
-          // Rate limited
-          this.logger.warn(
-            `[${message.id}] Discord rate limit hit during streaming update. Skipping update.`,
-          );
-          // Optional: Implement backoff delay for the *next* update attempt
-          lastUpdateTime += 2000; // Add 2 seconds penalty to delay next update
-        } else {
-          this.logger.error(
-            `[${message.id}] Failed to update Discord response:`,
-            error,
-          );
-          // Consider stopping the stream or marking the message with an error indicator
-        }
-      }
-    };
+    // Removed updateDiscordResponse function definition
 
     try {
       // --- Prepare Generation Options ---
@@ -836,12 +665,12 @@ export class LLMCordBot {
           generationOptions.maxOutputTokens = maxTokensFromConfig;
         }
 
-        this.logger.debug(
+        messageLogger.debug(
           `[${message.id}] Using base generation options: temp=${generationOptions.temperature ?? 'default'}, maxTokens=${generationOptions.maxOutputTokens ?? 'default'}`,
         );
       } else {
-        this.logger.warn(
-          `[${message.id}] Could not parse provider name from config.model: "${modelSetting}". Using default generation parameters.`,
+        messageLogger.warn( // Re-added the missing logger call
+          `Could not parse provider name from config.model: "${modelSetting}". Using default generation parameters.`,
         );
         // Initialize generationOptions if needed, potentially with defaults
         if (!generationOptions) {
@@ -862,24 +691,18 @@ export class LLMCordBot {
           generationOptions = {};
         } // Ensure options object exists
         generationOptions.tools = this.toolRegistry.getToolDefinitions(); // Use ToolRegistry
-        this.logger.debug(
-          `[${message.id}] Adding ${this.toolRegistry.getToolDefinitions().length} tools to generation options.`,
+        messageLogger.debug(
+          `Adding ${this.toolRegistry.getToolDefinitions().length} tools to generation options.`,
         ); // Use ToolRegistry
       }
 
-      // Send initial placeholder message BEFORE starting the stream
+      // Send initial placeholder message using ResponseManager
       try {
-        const initialPayload = usePlainResponses
-          ? { content: '...' }
-          : { embeds: [new EmbedBuilder().setDescription('...')] };
-        currentReplyMessage = await message.reply(initialPayload);
-        replyMessages.push(currentReplyMessage);
-        this.logger.debug(
-          `[${message.id}] Sent initial placeholder message ${currentReplyMessage.id}`,
-        );
+        await responseManager.sendInitialResponse();
+        messageLogger.debug(`Sent initial placeholder message via ResponseManager.`);
       } catch (initialReplyError) {
-        this.logger.error(
-          `[${message.id}] Failed to send initial placeholder reply:`,
+        messageLogger.error(
+          `Failed to send initial placeholder reply via ResponseManager:`,
           initialReplyError,
         );
         // If we can't even send the placeholder, abort processing for this message
@@ -891,19 +714,19 @@ export class LLMCordBot {
       let historyToUse = [...history]; // Start with a copy of the history
 
       // --- Log prompt retrieval and capability check ---
-      this.logger.debug(
-        `[${message.id}] Base system prompt from config: ${baseSystemPromptText ? `'${baseSystemPromptText.substring(0, 50)}...'` : 'undefined'}`,
+      messageLogger.debug(
+        `Base system prompt from config: ${baseSystemPromptText ? `'${baseSystemPromptText.substring(0, 50)}...'` : 'undefined'}`,
       );
-      this.logger.debug(
-        `[${message.id}] Formatted memory for prompt: ${formattedMemoryForPrompt ? `'${formattedMemoryForPrompt.substring(0, 100)}...'` : 'None'}`,
+      messageLogger.debug(
+        `Formatted memory for prompt: ${formattedMemoryForPrompt ? `'${formattedMemoryForPrompt.substring(0, 100)}...'` : 'None'}`,
       );
-      this.logger.debug(
-        `[${message.id}] Instructions: ${instructions ? `'${instructions.substring(0, 100)}...'` : 'None'}`,
+      messageLogger.debug(
+        `Instructions: ${instructions ? `'${instructions.substring(0, 100)}...'` : 'None'}`,
       );
 
       const providerSupportsSystem = this.llmProvider.supportsSystemPrompt();
-      this.logger.debug(
-        `[${message.id}] Provider supports system prompt: ${providerSupportsSystem}`,
+      messageLogger.debug(
+        `Provider supports system prompt: ${providerSupportsSystem}`,
       );
 
       if (providerSupportsSystem) {
@@ -913,8 +736,8 @@ export class LLMCordBot {
           formattedMemoryForPrompt +
           instructions
         ).trim();
-        this.logger.debug(
-          `[${message.id}] Passing history and combined system prompt to generateStream. SystemPrompt: ${finalSystemPrompt ? `'${finalSystemPrompt.substring(0, 100)}...'` : 'undefined'}`,
+        messageLogger.debug(
+          `Passing history and combined system prompt to generateStream. SystemPrompt: ${finalSystemPrompt ? `'${finalSystemPrompt.substring(0, 100)}...'` : 'undefined'}`,
         );
         // History already contains messages, memory was NOT injected here earlier
         stream = this.llmProvider.generateStream(
@@ -924,8 +747,8 @@ export class LLMCordBot {
         );
       } else {
         // Prepend system prompt, memory, and instructions to the first user message
-        this.logger.debug(
-          `[${message.id}] Provider does not support system role. Prepending prompt, memory, and instructions to first user message.`,
+        messageLogger.debug(
+          `Provider does not support system role. Prepending prompt, memory, and instructions to first user message.`,
         );
         const combinedPrefix = (
           baseSystemPromptText +
@@ -957,22 +780,22 @@ export class LLMCordBot {
                 });
               }
             }
-            this.logger.debug(
-              `[${message.id}] Combined prompt prepended to message ${userMessageIndex}.`,
+            messageLogger.debug(
+              `Combined prompt prepended to message ${userMessageIndex}.`,
             );
           } else {
-            this.logger.warn(
-              `[${message.id}] Found user message index but message object was undefined.`,
+            messageLogger.warn(
+              `Found user message index but message object was undefined.`,
             );
           }
         } else if (combinedPrefix) {
-          this.logger.warn(
-            `[${message.id}] Could not find user message to prepend combined prompt.`,
+          messageLogger.warn(
+            `Could not find user message to prepend combined prompt.`,
           );
         }
         // Call generateStream without the systemPrompt argument
-        this.logger.debug(
-          `[${message.id}] Passing modified history to generateStream (prepended). History: ${JSON.stringify(historyToUse)}, SystemPrompt: undefined`,
+        messageLogger.debug(
+          `Passing modified history to generateStream (prepended). History: ${JSON.stringify(historyToUse)}, SystemPrompt: undefined`,
         );
         stream = this.llmProvider.generateStream(
           historyToUse,
@@ -981,21 +804,24 @@ export class LLMCordBot {
         );
       }
 
-      this.logger.debug(`[${message.id}] LLM Stream Start`);
+      messageLogger.debug(`LLM Stream Start`);
       let toolCallsDetected: ToolCallRequest[] | null = null; // Variable to store detected tool calls
 
       for await (const chunk of stream) {
         // Handle content chunks
         if (chunk.content) {
-          accumulatedResponse += chunk.content;
-          // Update Discord periodically - pass isFinal=false
-          await updateDiscordResponse(accumulatedResponse, false);
+          // Append to local accumulator *only* if needed elsewhere (e.g., for tag processing)
+          if (chunk.content) { // Check if content exists before appending/updating
+              accumulatedResponse += chunk.content;
+              // Update Discord using ResponseManager - pass only the current chunk
+              await responseManager.updateResponse(chunk.content); // No isFinal flag
+          }
         }
 
         // Handle tool call chunks (often arrive in the final chunk)
         if (chunk.toolCalls && chunk.toolCalls.length > 0) {
           toolCallsDetected = chunk.toolCalls;
-          this.logger.info(
+          messageLogger.info(
             `[${message.id}] Tool call(s) detected in stream chunk: ${JSON.stringify(chunk.toolCalls)}`,
           );
           // Don't break yet, wait for isFinal
@@ -1003,52 +829,39 @@ export class LLMCordBot {
 
         // Handle final chunk
         if (chunk.isFinal) {
-          this.logger.info(
-            `[${message.id}] LLM Stream End. Reason: ${chunk.finishReason}. Total length: ${accumulatedResponse.length}. Tool Calls: ${!!toolCallsDetected}`,
+          messageLogger.info(
+            `LLM Stream End. Reason: ${chunk.finishReason}. Total length: ${accumulatedResponse.length}. Tool Calls: ${!!toolCallsDetected}`,
           );
-          // Final update for any remaining content
-          await updateDiscordResponse(accumulatedResponse, true);
+          // No update call here - finalize() handles the end state
 
           // --- Tool Call Handling ---
           if (toolCallsDetected) {
-            this.logger.info(
-              `[${message.id}] Handling ${toolCallsDetected.length} tool call(s).`,
+            messageLogger.info(
+              `Handling ${toolCallsDetected.length} tool call(s).`,
             );
 
             // 1. Add the assistant's message requesting the tool call(s) to history
-            //    Construct the content array with text and functionCall parts.
             const assistantContentParts: ChatMessageContentPart[] = [];
             if (accumulatedResponse) {
-              assistantContentParts.push({
-                type: 'text',
-                text: accumulatedResponse,
-              });
+              assistantContentParts.push({ type: 'text', text: accumulatedResponse });
             }
-            // Add a functionCall part for each detected tool call
             toolCallsDetected.forEach((tc) => {
               assistantContentParts.push({
                 type: 'functionCall',
-                functionCall: {
-                  name: tc.toolName,
-                  args: tc.args,
-                },
+                functionCall: { name: tc.toolName, args: tc.args },
               });
             });
-            historyToUse.push({
-              // Add to the history being used for the next call
-              role: 'assistant',
-              content: assistantContentParts, // Use the constructed parts array
-            });
+            historyToUse.push({ role: 'assistant', content: assistantContentParts });
 
             // 2. Execute tools and collect results
             const toolResultMessages: ChatMessage[] = [];
             for (const toolCall of toolCallsDetected) {
               const toolResultContent = await this._executeToolCall(toolCall);
               toolResultMessages.push({
-                role: 'tool', // Use 'tool' role for results
-                tool_call_id: toolCall.id, // Associate result with the call ID
-                tool_name: toolCall.toolName, // Add the name of the tool that was called
-                content: toolResultContent, // Content is the result of the tool execution
+                role: 'tool',
+                tool_call_id: toolCall.id,
+                tool_name: toolCall.toolName,
+                content: toolResultContent,
               });
             }
 
@@ -1056,132 +869,216 @@ export class LLMCordBot {
             historyToUse.push(...toolResultMessages);
 
             // WORKAROUND RE-ADDED: Gemini API requires the last message to have role 'user'.
-            // Add a placeholder user message after the tool results with descriptive content.
             const placeholderText = 'Okay, proceed based on the tool result.';
             historyToUse.push({ role: 'user', content: placeholderText });
-            this.logger.debug(
-              `[${message.id}] Added placeholder user message ('${placeholderText}') to history for Gemini API compliance.`,
-            );
-            +(
-              // 4. Call LLM again with updated history (including tool results and placeholder)
-              this.logger.info(
-                `[${message.id}] Re-calling LLM after tool execution with updated history (${historyToUse.length} messages).`,
-              )
-            );
+            messageLogger.debug(`Added placeholder user message for Gemini API compliance.`);
 
-            // Reset response state for the second stream
-            accumulatedResponse = ''; // Reset accumulated response
-            // Keep replyMessages, currentReplyMessage, lastUpdateTime? Or reset?
-            // Let's reset update time, but keep the message objects to edit them.
-            lastUpdateTime = 0;
+            // 4. Call LLM again with updated history
+            messageLogger.info(`Re-calling LLM after tool execution with updated history (${historyToUse.length} messages).`);
+            accumulatedResponse = ''; // Reset for the second stream
 
-            // Prepare generation options for the second call (potentially without tools)
             const secondCallOptions = { ...generationOptions };
-            // Decide if tools should be passed again. Usually not, unless multi-turn tool use is intended.
-            // delete secondCallOptions.tools; // Remove tools for the second call
+            // delete secondCallOptions.tools; // Optionally remove tools
 
-            // ADDED LOG: Inspect history before second call
-            this.logger.debug(
-              `[${message.id}] History before second LLM call: ${JSON.stringify(historyToUse, null, 2)}`,
-            );
+            messageLogger.debug(`History before second LLM call: ${JSON.stringify(historyToUse, null, 2)}`);
 
-            // Determine system prompt handling for the second call based on provider capability
             let secondSystemPrompt: string | undefined = undefined;
-            let secondHistory = [...historyToUse]; // Copy history for potential modification
+            let secondHistory = [...historyToUse];
 
             if (providerSupportsSystem) {
-              secondSystemPrompt = finalSystemPrompt; // Reuse the same combined prompt
-              this.logger.debug(
-                `[${message.id}] Passing history and system prompt for second call.`,
-              );
+              secondSystemPrompt = finalSystemPrompt;
+              messageLogger.debug(`Passing history and system prompt for second call.`);
             } else {
-              // Prepend the combined prompt again if needed (or handle differently?)
-              // For simplicity, let's assume the first message is still user after tool results + placeholder
-              this.logger.debug(
-                `[${message.id}] Prepending combined prompt for second call.`,
-              );
-              const combinedPrefix = (
-                baseSystemPromptText +
-                formattedMemoryForPrompt +
-                instructions
-              ).trim();
-              const userMessageIndex = secondHistory.findIndex(
-                (msg) => msg.role === 'user',
-              );
+              messageLogger.debug(`Prepending combined prompt for second call.`);
+              const combinedPrefix = (baseSystemPromptText + formattedMemoryForPrompt + instructions).trim();
+              const userMessageIndex = secondHistory.findIndex((msg) => msg.role === 'user');
               if (userMessageIndex !== -1 && combinedPrefix) {
                 const userMessage = secondHistory[userMessageIndex];
                 if (userMessage) {
                   const separator = '\n\n---\n\n';
                   const prefixWithSeparator = `${combinedPrefix}${separator}`;
                   if (typeof userMessage.content === 'string') {
-                    userMessage.content =
-                      prefixWithSeparator + userMessage.content;
+                    userMessage.content = prefixWithSeparator + userMessage.content;
                   } else {
-                    let textPart = userMessage.content.find(
-                      (part) => part.type === 'text',
-                    ) as ChatMessageContentPartText | undefined;
+                    let textPart = userMessage.content.find((part) => part.type === 'text') as ChatMessageContentPartText | undefined;
                     if (textPart) {
                       textPart.text = prefixWithSeparator + textPart.text;
                     } else {
-                      userMessage.content.unshift({
-                        type: 'text',
-                        text: prefixWithSeparator.trim(),
-                      });
+                      userMessage.content.unshift({ type: 'text', text: prefixWithSeparator.trim() });
                     }
                   }
                 }
               }
-              secondSystemPrompt = undefined; // Pass undefined system prompt
+              secondSystemPrompt = undefined;
             }
 
-            const secondStream = this.llmProvider.generateStream(
-              secondHistory,
-              secondSystemPrompt,
-              secondCallOptions,
-            );
+            const secondStream = this.llmProvider.generateStream(secondHistory, secondSystemPrompt, secondCallOptions);
 
             // 5. Process the second stream
             for await (const secondChunk of secondStream) {
               if (secondChunk.content) {
                 accumulatedResponse += secondChunk.content;
-                await updateDiscordResponse(accumulatedResponse, false);
+                await responseManager.updateResponse(secondChunk.content); // No isFinal flag
               }
-              // Handle potential nested tool calls if the API supports it (unlikely/complex)
               if (secondChunk.toolCalls && secondChunk.toolCalls.length > 0) {
-                this.logger.warn(
-                  `[${message.id}] Nested tool calls detected in second LLM response. This is not fully supported. Ignoring.`,
-                );
+                messageLogger.warn(`Nested tool calls detected in second LLM response. Ignoring.`);
               }
               if (secondChunk.isFinal) {
-                this.logger.info(
-                  `[${message.id}] Second LLM Stream End. Reason: ${secondChunk.finishReason}. Final length: ${accumulatedResponse.length}.`,
-                );
-                await updateDiscordResponse(accumulatedResponse, true); // Final update for the second response
-                break; // Exit second stream loop
+                messageLogger.info(`Second LLM Stream End. Reason: ${secondChunk.finishReason}. Final length: ${accumulatedResponse.length}.`);
+                // Do NOT break here, let the outer loop handle the final chunk logic
               }
             }
-            // After handling the second stream, the final response is in accumulatedResponse.
-            // We can now let the rest of the function proceed (memory suggestions, final update).
-            finalResponseToUser = accumulatedResponse; // Update the final response
+            finalResponseToUser = accumulatedResponse; // Update final response after second stream
           } // --- End Tool Call Handling ---
 
-          break; // Exit loop on final chunk
+          // Do NOT break here if it was the final chunk. Let the logic after the loop run.
+          // break; // REMOVED: Exit loop on final chunk
         }
       }
 
-      this.logger.debug(
+      messageLogger.debug(
         `[${message.id}] Full LLM Response processed (length: ${accumulatedResponse.length})`,
       );
 
-      // --- Process Memory Tags (using helper method) ---
-      // Use finalResponseToUser if it was updated by tool calls, otherwise use accumulatedResponse
-      const responseToCheckForMemory =
-        finalResponseToUser || accumulatedResponse;
-      finalResponseToUser = this._processMemorySuggestions(
+      // --- Reasoning Logic (Check if primary response signals reasoning) ---
+      if (this.reasoningManager?.isEnabled() && !toolCallsDetected) { // Don't trigger reasoning if tools were called
+          const responseToCheckForReasoning = finalResponseToUser || accumulatedResponse;
+          const startSignal = this.config.reasoning?.signalStart ?? '[USE_REASONING_MODEL]'; // Get configured start signal
+
+          // Check if the response *exactly* matches the start signal (after trimming)
+          if (responseToCheckForReasoning.trim() === startSignal) {
+              messageLogger.debug('Reasoning triggered by exact signal match.');
+              if (!this.reasoningManager.checkRateLimit(userId)) {
+                  const reasoningPrompt = message.content; // Use original user message content as the prompt
+                  if (!reasoningPrompt) {
+                      messageLogger.warn('Reasoning triggered by exact signal, but original message content is empty. Aborting reasoning.');
+                      finalResponseToUser = ''; // Fallback to empty response
+                  } else {
+                      messageLogger.info(`Invoking reasoning manager for user ${userId} using original message content.`);
+                      this.statusManager.setTemporaryStatus('🧠 Reasoning...', 60, undefined, 'idle');
+                      try { await responseManager.replaceContent('Warming the servers...'); } catch (e: any) { messageLogger.warn(`Failed to update message to 'Warming the servers...': ${e.message}`); } // Use replaceContent
+
+                      // --- Reasoning Call (Signal-Only Case) ---
+                      let accumulatedReasoningResponse = '';
+                      let reasoningErrorOccurred = false;
+                      let finalReason: FinishReason = 'unknown';
+                      let firstChunkReceived = false;
+                      let reasoningTimeoutId: NodeJS.Timeout | null = null;
+
+                      try {
+                          const reasoningStream = this.reasoningManager.generateReasoningResponse(history, reasoningPrompt, userId);
+                          const iterator = reasoningStream[Symbol.asyncIterator]();
+                          reasoningTimeoutId = setTimeout(async () => { if (!firstChunkReceived) { messageLogger.info(`Reasoning taking longer than 5s...`); try { await responseManager.replaceContent('🧠 Thinking deeper...'); } catch (e: any) { /* ignore */ } } }, 5000); // Use replaceContent
+
+                          while (true) {
+                              const result = await iterator.next();
+                              firstChunkReceived = true;
+                              if (reasoningTimeoutId) { clearTimeout(reasoningTimeoutId); reasoningTimeoutId = null; }
+                              if (result.done) { messageLogger.info(`Reasoning stream iteration finished.`); break; }
+                              const chunk = result.value;
+                              if (chunk.content) { accumulatedReasoningResponse += chunk.content; await responseManager.updateResponse(chunk.content); }
+                              if (chunk.isFinal) {
+                                  finalReason = chunk.finishReason ?? 'unknown';
+                                  if (finalReason === 'error') { reasoningErrorOccurred = true; messageLogger.error(`Reasoning stream error: ${chunk.content || 'Unknown'}`); accumulatedReasoningResponse = chunk.content || 'Reasoning failed.'; }
+                                  else { messageLogger.info(`Reasoning stream finished: ${finalReason}`); }
+                                  break;
+                              }
+                          }
+                          if (reasoningTimeoutId) { clearTimeout(reasoningTimeoutId); reasoningTimeoutId = null; } // Final clear
+
+                          if (!reasoningErrorOccurred && accumulatedReasoningResponse.trim()) { finalResponseToUser = accumulatedReasoningResponse.trim(); messageLogger.info(`Reasoning completed successfully.`); }
+                          else if (!reasoningErrorOccurred) { messageLogger.warn(`Reasoning stream produced no content. Falling back.`); finalResponseToUser = ''; /* Fallback to empty if original was just signal */ }
+                          else { finalResponseToUser = accumulatedReasoningResponse.trim(); /* Use error message */ }
+
+                      } catch (reasoningError) {
+                          messageLogger.error(`Reasoning process failed (signal-only case):`, reasoningError);
+                          await responseManager.handleError(new Error('Reasoning process failed.'));
+                          finalResponseToUser = ''; // Fallback to empty
+                      }
+                      // --- End Reasoning Call (Signal-Only Case) ---
+                  }
+              } else { // Rate limited
+                  messageLogger.warn(`Reasoning request rate limited for user ${userId}.`);
+                  finalResponseToUser = ''; // Fallback to empty if original was just signal
+              }
+          }
+          // Check if the response *contains* the signal but isn't *only* the signal (for tagged prompts)
+          // Use the manager's check which uses includes() - this is okay here as we *want* to extract
+          else if (this.reasoningManager.checkResponseForSignal(responseToCheckForReasoning)) {
+              messageLogger.debug('Reasoning signal detected within response. Attempting to extract prompt between tags.');
+              if (!this.reasoningManager.checkRateLimit(userId)) {
+                  const reasoningPrompt = this.reasoningManager.getReasoningSignal(responseToCheckForReasoning); // Extract content between tags
+
+                  if (reasoningPrompt !== null) {
+                      messageLogger.info(`Invoking reasoning manager for user ${userId} using extracted prompt.`);
+                      this.statusManager.setTemporaryStatus('🧠 Reasoning...', 60, undefined, 'idle');
+                      try { await responseManager.replaceContent('Warming the servers...'); } catch (e: any) { messageLogger.warn(`Failed to update message to 'Warming the servers...': ${e.message}`); } // Use replaceContent
+
+                      // --- Reasoning Call (Tagged Prompt Case) ---
+                      let accumulatedReasoningResponse = '';
+                      let reasoningErrorOccurred = false;
+                      let finalReason: FinishReason = 'unknown';
+                      let firstChunkReceived = false;
+                      let reasoningTimeoutId: NodeJS.Timeout | null = null;
+
+                      try {
+                          const reasoningStream = this.reasoningManager.generateReasoningResponse(history, reasoningPrompt, userId);
+                          const iterator = reasoningStream[Symbol.asyncIterator]();
+                          reasoningTimeoutId = setTimeout(async () => { if (!firstChunkReceived) { messageLogger.info(`Reasoning taking longer than 5s...`); try { await responseManager.replaceContent('🧠 Thinking deeper...'); } catch (e: any) { /* ignore */ } } }, 5000); // Use replaceContent
+
+                          while (true) {
+                              const result = await iterator.next();
+                              firstChunkReceived = true;
+                              if (reasoningTimeoutId) { clearTimeout(reasoningTimeoutId); reasoningTimeoutId = null; }
+                              if (result.done) { messageLogger.info(`Reasoning stream iteration finished.`); break; }
+                              const chunk = result.value;
+                              if (chunk.content) { accumulatedReasoningResponse += chunk.content; await responseManager.updateResponse(chunk.content); }
+                              if (chunk.isFinal) {
+                                  finalReason = chunk.finishReason ?? 'unknown';
+                                  if (finalReason === 'error') { reasoningErrorOccurred = true; messageLogger.error(`Reasoning stream error: ${chunk.content || 'Unknown'}`); accumulatedReasoningResponse = chunk.content || 'Reasoning failed.'; }
+                                  else { messageLogger.info(`Reasoning stream finished: ${finalReason}`); }
+                                  break;
+                              }
+                          }
+                          if (reasoningTimeoutId) { clearTimeout(reasoningTimeoutId); reasoningTimeoutId = null; } // Final clear
+
+                          if (!reasoningErrorOccurred && accumulatedReasoningResponse.trim()) { finalResponseToUser = accumulatedReasoningResponse.trim(); messageLogger.info(`Reasoning completed successfully.`); }
+                          else if (!reasoningErrorOccurred) { messageLogger.warn(`Reasoning stream produced no content. Falling back.`); const endSignal = this.config.reasoning?.signalEnd ?? '[/USE_REASONING_MODEL]'; const stripRegex = new RegExp(`${startSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${endSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'); finalResponseToUser = responseToCheckForReasoning.replace(stripRegex, '').trim(); }
+                          else { finalResponseToUser = accumulatedReasoningResponse.trim(); /* Use error message */ }
+
+                      } catch (reasoningError) {
+                          messageLogger.error(`Reasoning process failed (tagged prompt case):`, reasoningError);
+                          await responseManager.handleError(new Error('Reasoning process failed.'));
+                          // Fallback: Remove only the start tag
+                          finalResponseToUser = responseToCheckForReasoning.replace(startSignal, '').trim();
+                      }
+                      // --- End Reasoning Call (Tagged Prompt Case) ---
+
+                  } else { // Extraction failed
+                      messageLogger.warn('Reasoning signal detected but content extraction failed. Removing tag and proceeding.');
+                      finalResponseToUser = responseToCheckForReasoning.replace(startSignal, '').trim();
+                  }
+              } else { // Rate limited
+                  messageLogger.warn(`Reasoning request rate limited for user ${userId}.`);
+                  // Fallback: Remove only the start tag
+                  finalResponseToUser = responseToCheckForReasoning.replace(startSignal, '').trim();
+              }
+          } // End of checks for reasoning signal
+      } // End of reasoning enabled check
+      // Clear reasoning temporary status regardless of outcome
+      this.statusManager.clearTemporaryStatus();
+      // --- End Reasoning Logic ---
+
+      // --- Process Memory Tags *after* all streams and reasoning ---
+      // Use the potentially updated finalResponseToUser from reasoning
+      const finalResponseText = finalResponseToUser || accumulatedResponse; // Use reasoning result if available
+      messageLogger.debug( 'Text before processing memory suggestions',{ responseText: finalResponseText },);
+      this._processMemorySuggestions(
         userId,
-        responseToCheckForMemory,
+        finalResponseText, // Process tags on the final text
         message.id,
       );
+      // Note: Tags are processed for storage but NOT stripped from the already sent response here.
 
       // --- Placeholder: Reasoning Logic ---
       if (this.reasoningManager?.isEnabled() && finalResponseToUser) {
@@ -1193,8 +1090,8 @@ export class LLMCordBot {
               this.reasoningManager.getReasoningSignal(finalResponseToUser);
             if (signal) {
               try {
-                this.logger.info(
-                  `[${message.id}] Invoking reasoning manager for user ${userId}...`,
+                messageLogger.info(
+                  `Invoking reasoning manager for user ${userId}...`,
                 );
                 // Pass original history and userId
                 // Set temporary status before starting reasoning
@@ -1205,9 +1102,12 @@ export class LLMCordBot {
                   'idle',
                 );
 
-                // Edit placeholder to show reasoning is in progress
-                if (currentReplyMessage) {
-                    await currentReplyMessage.edit('🧠 Reasoning...');
+                // Edit placeholder using ResponseManager (send an update)
+                // Note: ResponseManager handles the message object internally
+                try {
+                    await responseManager.updateResponse('🧠 Reasoning...'); // Send intermediate update
+                } catch (editError: any) { // Added : any type
+                    messageLogger.warn(`Failed to update message to 'Reasoning...': ${editError.message}`);
                 }
 
                 let accumulatedReasoningResponse = '';
@@ -1222,14 +1122,17 @@ export class LLMCordBot {
                 );
                 const iterator = reasoningStream[Symbol.asyncIterator]();
                 let firstChunkReceived = false;
+                let reasoningTimeoutId: NodeJS.Timeout | null = null;
 
-                // Start a 5-second timer
-                const timeoutId = setTimeout(() => {
-                    if (!firstChunkReceived && currentReplyMessage) {
-                        this.logger.info(`[${message.id}] Reasoning taking longer than 5s, updating status...`);
-                        currentReplyMessage.edit('🧠 Thinking deeper...').catch(editError => {
-                             this.logger.warn(`[${message.id}] Failed to edit message to 'Thinking deeper...': ${editError.message}`);
-                        });
+                // Start a 5-second timer to update status if no chunk received
+                reasoningTimeoutId = setTimeout(async () => {
+                    if (!firstChunkReceived) {
+                        messageLogger.info(`Reasoning taking longer than 5s, updating status...`);
+                        try {
+                            await responseManager.updateResponse('🧠 Thinking deeper...');
+                        } catch (editError: any) { // Added : any type
+                            messageLogger.warn(`Failed to edit message to 'Thinking deeper...': ${editError.message}`);
+                        }
                     }
                 }, 5000);
 
@@ -1238,59 +1141,56 @@ export class LLMCordBot {
                 while (true) {
                     const result = await iterator.next();
                     firstChunkReceived = true; // Mark as received once iterator.next() resolves
+                    // Clear timeout as soon as the first chunk arrives
+                    if (reasoningTimeoutId) {
+                        clearTimeout(reasoningTimeoutId);
+                        reasoningTimeoutId = null;
+                    }
 
                     if (result.done) {
-                        clearTimeout(timeoutId); // Clear timeout if stream finishes
-                        this.logger.info(`[${message.id}] Reasoning stream iteration finished.`);
+                        messageLogger.info(`Reasoning stream iteration finished.`);
                         break; // Exit the while loop
                     }
 
                     const chunk = result.value;
-                    this.logger.debug(`[${message.id}] Received reasoning chunk. Content length: ${chunk.content?.length ?? 0}, isFinal: ${chunk.isFinal}`);
+                    messageLogger.debug(`Received reasoning chunk. Content length: ${chunk.content?.length ?? 0}, isFinal: ${chunk.isFinal}`);
 
                     if (chunk.content) {
                         accumulatedReasoningResponse += chunk.content;
-                        // Throttle intermediate updates
-                        const now = Date.now();
-                        if (currentReplyMessage && accumulatedReasoningResponse.trim() && (now - lastUpdateTime > updateIntervalMs)) {
-                            lastUpdateTime = now;
-                            const contentToShow = accumulatedReasoningResponse.substring(0, characterLimit);
-                            const intermediatePayload = usePlainResponses
-                                ? { content: `${contentToShow} ⚪` }
-                                : { embeds: [new EmbedBuilder().setDescription(`${contentToShow} ⚪`).setColor(0xffa500)] };
-                            try {
-                                await currentReplyMessage.edit(intermediatePayload);
-                                this.logger.debug(`[${message.id}] Updated reasoning stream message ${currentReplyMessage.id}`);
-                            } catch (editError: any) {
-                                this.logger.warn(`[${message.id}] Failed to edit reasoning stream message: ${editError.message}`);
-                                if (editError.code === 429) lastUpdateTime = 0;
-                            }
-                        }
+                        // Update using ResponseManager (it handles throttling internally)
+                        await responseManager.updateResponse(chunk.content);
                     }
 
                     if (chunk.isFinal) {
-                        clearTimeout(timeoutId); // Clear timeout on final chunk
+                        // Clear timeout just in case it was still pending
+                        if (reasoningTimeoutId) {
+                            clearTimeout(reasoningTimeoutId);
+                            reasoningTimeoutId = null;
+                        }
                         finalReason = chunk.finishReason ?? 'unknown';
                         if (finalReason === 'error') {
                             reasoningErrorOccurred = true;
-                            this.logger.error(`[${message.id}] Reasoning stream finished with error: ${chunk.content || 'Unknown error'}`);
+                            messageLogger.error(`Reasoning stream finished with error: ${chunk.content || 'Unknown error'}`);
                             accumulatedReasoningResponse = chunk.content || 'Reasoning failed.';
                         } else {
-                             this.logger.info(`[${message.id}] Reasoning stream finished with reason: ${finalReason}`);
+                             messageLogger.info(`Reasoning stream finished with reason: ${finalReason}`);
                         }
                         break; // Exit the while loop
                     }
                 }
-                // Ensure timeout is cleared if loop exits unexpectedly (e.g., error before isFinal)
-                clearTimeout(timeoutId);
+                // Ensure timeout is cleared if loop exits unexpectedly
+                if (reasoningTimeoutId) {
+                    clearTimeout(reasoningTimeoutId);
+                    reasoningTimeoutId = null;
+                }
 
                 // Update final response based on accumulated stream content
                 if (!reasoningErrorOccurred && accumulatedReasoningResponse.trim()) {
                      finalResponseToUser = accumulatedReasoningResponse.trim();
-                     this.logger.info(`[${message.id}] Reasoning completed successfully.`);
+                     messageLogger.info(`Reasoning completed successfully.`);
                 } else if (!reasoningErrorOccurred) {
                      // Stream finished without error but no content was generated
-                     this.logger.warn(`[${message.id}] Reasoning stream finished successfully but produced no content. Falling back.`);
+                     messageLogger.warn(`Reasoning stream finished successfully but produced no content. Falling back.`);
                      // Fallback: Remove the reasoning tags from the original response
                      const startSignal = this.config.reasoning?.signalStart ?? '[REASONING_REQUEST]';
                      const endSignal = this.config.reasoning?.signalEnd ?? '[/REASONING_REQUEST]';
@@ -1303,18 +1203,20 @@ export class LLMCordBot {
                      finalResponseToUser = accumulatedReasoningResponse.trim();
                 }
               } catch (reasoningError) {
-                this.logger.error(
-                  `[${message.id}] Error during reasoning process:`,
+                messageLogger.error(
+                  `Error during reasoning process:`,
                   reasoningError,
                 );
+                // Let ResponseManager handle displaying an error if possible
+                await responseManager.handleError(new Error('Reasoning process failed.')); // Use handleError
                 // Fallback: Remove only the start tag from the original response on error
                 const startSignal = this.config.reasoning?.signalStart ?? '[REASONING_REQUEST]';
                 finalResponseToUser = finalResponseToUser.replace(startSignal, '').trim();
               }
             } else {
                // --- NEW LOGIC for when ONLY START tag is found ---
-               this.logger.info(
-                   `[${message.id}] Reasoning start tag detected without end tag. Extracting fallback signal.`,
+               messageLogger.info(
+                   `Reasoning start tag detected without end tag. Extracting fallback signal.`,
                );
                const startSignal = this.config.reasoning?.signalStart ?? '[REASONING_REQUEST]';
                // Use accumulatedResponse here to ensure we check the raw response before memory tags were stripped
@@ -1326,11 +1228,13 @@ export class LLMCordBot {
 
                    // Proceed with reasoning even if fallbackSignal is empty, as per instructions.
                    // An empty fallbackSignal means the primary model responded *only* with the start tag.
-                   this.logger.debug(`[${message.id}] Using fallback signal (may be empty): '${fallbackSignal.substring(0, 50)}...'`);
+                   messageLogger.debug(`Using fallback signal (may be empty): '${fallbackSignal.substring(0, 50)}...'`);
                    try {
-                       // Edit placeholder to show reasoning is in progress
-                       if (currentReplyMessage) {
-                           await currentReplyMessage.edit('🧠 Reasoning (fallback)...');
+                       // Edit placeholder using ResponseManager
+                       try {
+                           await responseManager.updateResponse('🧠 Reasoning (fallback)...');
+                       } catch (editError: any) { // Added : any type
+                           messageLogger.warn(`Failed to update message to 'Reasoning (fallback)...': ${editError.message}`);
                        }
 
                        let accumulatedReasoningResponse = '';
@@ -1345,68 +1249,46 @@ export class LLMCordBot {
                        );
 
                        // Iterate over the stream and update message
-                        let deeperThinkingTimeout: NodeJS.Timeout | null = null;
-                        let deeperThinkingMessageShown = false;
+                       let fallbackTimeoutId: NodeJS.Timeout | null = null;
+                       let fallbackFirstChunkReceived = false;
 
-                        if (currentReplyMessage) {
-                            deeperThinkingTimeout = setTimeout(async () => {
-                                // Check if we haven't received any content yet and haven't already shown the message
-                                if (accumulatedReasoningResponse.trim() === '' && !deeperThinkingMessageShown && currentReplyMessage) {
-                                    this.logger.info(`[${message.id}] Fallback reasoning taking longer than 5s. Displaying 'Thinking deeper...'`);
-                                    deeperThinkingMessageShown = true; // Mark as shown
-                                    try {
-                                        // Use consistent payload structure
-                                        const deeperPayload = usePlainResponses
-                                            ? { content: '🤔 Thinking deeper...' }
-                                            : { embeds: [new EmbedBuilder().setDescription('🤔 Thinking deeper...').setColor(0xaaaaaa)] }; // Grey embed
-                                        await currentReplyMessage.edit(deeperPayload);
-                                    } catch (editError) {
-                                        this.logger.error(`[${message.id}] Error editing message for 'Thinking deeper...':`, editError);
-                                    }
-                                }
-                            }, 5000); // 5 seconds timeout
-                        }
-
+                       fallbackTimeoutId = setTimeout(async () => {
+                           if (!fallbackFirstChunkReceived) {
+                               messageLogger.info(`Fallback reasoning taking longer than 5s, updating status...`);
+                               try {
+                                   await responseManager.updateResponse('🤔 Thinking deeper...');
+                               } catch (editError: any) { // Added : any type
+                                   messageLogger.warn(`Failed to edit message to 'Thinking deeper...': ${editError.message}`);
+                               }
+                           }
+                       }, 5000);
 
                        for await (const chunk of reasoningStream) {
-                           this.logger.debug(`[${message.id}] Received fallback reasoning chunk. Content length: ${chunk.content?.length ?? 0}, isFinal: ${chunk.isFinal}`);
+                           fallbackFirstChunkReceived = true;
+                           if (fallbackTimeoutId) {
+                               clearTimeout(fallbackTimeoutId);
+                               fallbackTimeoutId = null;
+                           }
+                           messageLogger.debug(`Received fallback reasoning chunk. Content length: ${chunk.content?.length ?? 0}, isFinal: ${chunk.isFinal}`);
                            if (chunk.content) {
                                accumulatedReasoningResponse += chunk.content;
-                               // Throttle intermediate updates
-                                const now = Date.now();
-                                if (currentReplyMessage && accumulatedReasoningResponse.trim() && (now - lastUpdateTime > updateIntervalMs)) {
-                                    lastUpdateTime = now;
-                                    // Use consistent payload structure (plain/embed) based on config
-                                    const contentToShow = accumulatedReasoningResponse.substring(0, characterLimit); // Ensure within limit
-                                    const intermediatePayload = usePlainResponses
-                                        ? { content: `${contentToShow} ⚪` } // Add streaming indicator
-                                        : { embeds: [new EmbedBuilder().setDescription(`${contentToShow} ⚪`).setColor(0xffa500)] }; // Orange embed
-                                    try {
-                                        await currentReplyMessage.edit(intermediatePayload);
-                                        this.logger.debug(`[${message.id}] Updated fallback reasoning stream message ${currentReplyMessage.id}`);
-                                    } catch (editError: any) {
-                                        // Log errors during intermediate edits but continue stream
-                                        this.logger.warn(`[${message.id}] Failed to edit fallback reasoning stream message: ${editError.message}`);
-                                        // Reset update time to allow next attempt sooner if rate limited
-                                        if (editError.code === 429) lastUpdateTime = 0;
-                                    }
-                                }
-                            // Clear the 'Thinking deeper...' timeout as soon as the first chunk arrives
-                            if (deeperThinkingTimeout) {
-                                clearTimeout(deeperThinkingTimeout);
-                                deeperThinkingTimeout = null;
-                            }
+                               // Update using ResponseManager
+                               await responseManager.updateResponse(chunk.content);
 
                            }
                            // TODO: Handle chunk.toolCalls if needed
                            if (chunk.isFinal) {
                                finalReason = chunk.finishReason ?? 'unknown';
+                               if (fallbackTimeoutId) { // Clear timeout on final chunk too
+                                   clearTimeout(fallbackTimeoutId);
+                                   fallbackTimeoutId = null;
+                               }
                                if (finalReason === 'error') {
                                    reasoningErrorOccurred = true;
-                                   this.logger.error(`[${message.id}] Fallback reasoning stream finished with error: ${chunk.content || 'Unknown error'}`);
+                                   messageLogger.error(`Fallback reasoning stream finished with error: ${chunk.content || 'Unknown error'}`);
                                    accumulatedReasoningResponse = chunk.content || 'Fallback reasoning failed.';
                                } else {
-                                   this.logger.info(`[${message.id}] Fallback reasoning stream finished with reason: ${finalReason}`);
+                                   messageLogger.info(`Fallback reasoning stream finished with reason: ${finalReason}`);
                                }
                                break; // Exit loop on final chunk
                            }
@@ -1415,10 +1297,10 @@ export class LLMCordBot {
                        // Update final response based on accumulated stream content
                        if (!reasoningErrorOccurred && accumulatedReasoningResponse.trim()) {
                             finalResponseToUser = accumulatedReasoningResponse.trim();
-                            this.logger.info(`[${message.id}] Fallback reasoning completed successfully.`);
+                            messageLogger.info(`Fallback reasoning completed successfully.`);
                        } else if (!reasoningErrorOccurred) {
                             // Stream finished without error but no content was generated
-                            this.logger.warn(`[${message.id}] Fallback reasoning stream finished successfully but produced no content. Removing tag.`);
+                            messageLogger.warn(`Fallback reasoning stream finished successfully but produced no content. Removing tag.`);
                             // Fallback: Remove only the start tag from the original response
                             finalResponseToUser = accumulatedResponse.replace(startSignal, '').trim(); // Use accumulatedResponse (original)
                        } else {
@@ -1427,24 +1309,27 @@ export class LLMCordBot {
                        }
 
                    } catch (reasoningError) {
-                       this.logger.error(
-                           `[${message.id}] Error initiating fallback reasoning process:`, // Updated log message
+                       messageLogger.error(
+                           `Error initiating fallback reasoning process:`, // Updated log message
                            reasoningError,
                        );
+                       // Let ResponseManager handle displaying an error if possible
+                       await responseManager.handleError(new Error('Fallback reasoning process failed.')); // Use handleError
+                       // Removed erroneous ); from failed diff apply
                        // Fallback: Remove only the start tag from the original response
                        finalResponseToUser = accumulatedResponse.replace(startSignal, '').trim();
                    }
                    // Removed the 'else' block that previously handled empty fallbackSignal incorrectly.
                } else {
                    // Should not happen if signalDetected is true, but handle defensively
-                   this.logger.error(`[${message.id}] Signal detected but start index not found. This shouldn't happen. Removing tag.`);
+                   messageLogger.error(`Signal detected but start index not found. This shouldn't happen. Removing tag.`);
                    // Fallback: Remove the start tag just in case
                     finalResponseToUser = finalResponseToUser.replace(startSignal, '').trim();
                }
             }
           } else {
-            this.logger.warn(
-              `[${message.id}] Reasoning request rate limited for user ${userId}.`,
+            messageLogger.warn(
+              `Reasoning request rate limited for user ${userId}.`,
             );
             // Fallback: Remove only the start tag if rate limited
             const startSignal = this.config.reasoning?.signalStart ?? '[REASONING_REQUEST]';
@@ -1457,37 +1342,33 @@ export class LLMCordBot {
 
       // --- Final Update ---
       // Add user warnings to the final response if any exist
-      const warningsString =
-        userWarnings.length > 0 // Corrected from .size to .length for array
-          ? `\n\n*(${Array.from(userWarnings).join(', ')})*`
-          : '';
-      const finalContentWithWarnings =
-        (finalResponseToUser ||
-          (warningsString ? '' : 'No response generated.')) + warningsString; // Ensure something is sent
+      // Removed unused finalContentWithWarnings variable declaration
 
-      if (finalContentWithWarnings.trim()) {
-        await updateDiscordResponse(finalContentWithWarnings, true); // Perform final update
-        this.logger.info(`[${message.id}] Final response sent/updated.`);
-      } else {
-        this.logger.info(
-          `[${message.id}] No content left to send after processing tags and adding warnings.`,
-        );
-        // The logic to handle empty final messages is now inside updateDiscordResponse
+      // --- Finalize Response ---
+      await responseManager.finalize(); // Call finalize *after* all processing
+
+      // Log warnings after finalization
+      if (userWarnings.length > 0) {
+          const warningsString = userWarnings.map(w => w.message).join(', ');
+      messageLogger.debug('Calling responseManager.finalize()');
+          messageLogger.warn(`Processing finished with warnings: ${warningsString}`);
       }
+      messageLogger.debug('Finished responseManager.finalize()');
+
+      messageLogger.info(`Message processing complete.`);
+      // Removed unused finalContentWithWarnings variable declaration and ensure no lingering updateResponse calls
     } catch (error: any) {
       // Keep the : any type from the actual file content
-      this.logger.error(
-        `[${message.id}] Error processing message with LLM:`,
+      messageLogger.error(
+        `Error processing message with LLM:`,
         error,
       ); // Keep the exact error message
       try {
-        // Attempt to send an error message back to the user
-        await message.reply(
-          'Sorry, I encountered an error while processing your request.',
-        ); // Keep the exact reply text
+        // Attempt to send an error message back to the user via ResponseManager
+        await responseManager.handleError(new Error('Sorry, I encountered an error while processing your request.')); // Use handleError
       } catch (replyError) {
-        this.logger.error(
-          `[${message.id}] Failed to send error reply to Discord:`,
+        messageLogger.error(
+          `Failed to send error reply via ResponseManager:`,
           replyError,
         ); // Keep the exact error message
       }

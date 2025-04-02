@@ -48,7 +48,8 @@ const createMockBotWithMocks = (configOverrides: DeepPartial<Config> = {}) => {
         debug: vi.fn(),
         warn: vi.fn(),
         error: vi.fn(),
-        child: vi.fn(() => bot.logger),
+        // child: vi.fn(() => bot.logger), // Keep original child for reference if needed
+        getSubLogger: vi.fn(() => bot.logger), // Add mock for getSubLogger
     } as unknown as Logger;
 
     // Base config

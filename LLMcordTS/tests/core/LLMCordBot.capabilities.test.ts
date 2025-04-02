@@ -36,7 +36,7 @@ vi.mock('../../src/discord/slashCommandHandler.js'); // Added .js extension
 vi.mock('../../src/utils/rateLimiter.js'); // Added .js extension
 vi.mock('../../src/core/toolRegistry.js'); // Mock ToolRegistry
 // REMOVED: vi.mock('../../src/processing/MessageProcessor.js'); // Don't mock the class we are testing indirectly or directly
-vi.mock('../../src/processing/MessageProcessor.js'); // Mock MessageProcessor class
+// vi.mock('../../src/processing/MessageProcessor.js'); // REMOVED - We want to test the real MessageProcessor here
 vi.mock('discord.js', async (importOriginal) => {
     const actual = await importOriginal<typeof import('discord.js')>();
     return {
@@ -159,10 +159,10 @@ describe('LLMCordBot Capability Handling', () => {
         bot.llmProvider = mockProvider;
 
         // Add MessageProcessor instantiation for the first describe block
-        const mockHttpClient = { get: vi.fn() } as unknown as AxiosInstance;
+        const mockHttpClient = { get: vi.fn().mockResolvedValue({ status: 200, data: Buffer.from('mockimagedata').toString('base64') }) } as unknown as AxiosInstance; // Add default mock response for get
         const mockMessageNodeCache = new Map<string, IMessageNode>();
         const clientId = bot.config.discord?.clientId ?? 'mock-client-id-fallback';
-        bot.httpClient = mockHttpClient; // Assign if needed by other parts of initialize/bot
+        bot.httpClient = mockHttpClient; // Assign mock HttpClient to the bot instance
         bot.messageNodeCache = mockMessageNodeCache; // Assign if needed
 
         // Instantiate the REAL MessageProcessor
@@ -175,11 +175,7 @@ describe('LLMCordBot Capability Handling', () => {
             clientId
         );
 
-        // Mock buildMessageHistory for tests in this block, as they focus on processMessage logic AFTER history build
-        vi.spyOn(bot.messageProcessor, 'buildMessageHistory').mockResolvedValue({
-             history: [{ role: 'user', content: 'Hello bot' }], // Use content relevant to the test
-             warnings: []
-        });
+        // REMOVED spyOn buildMessageHistory - we want to test the real method now
     });
 
     it('should pass system prompt directly if provider supports it', async () => {
@@ -200,7 +196,7 @@ describe('LLMCordBot Capability Handling', () => {
         // Removed unused variable expectedSystemPrompt
         // Check system prompt contains relevant parts, exact match might be brittle
         expect(callArgs[1]).toContain('Test System Prompt'); // Base prompt
-        expect(callArgs[1]).toContain('You have no memories of the user.'); // Default memory block when no memory fetched
+        expect(callArgs[1]).not.toContain('--- User Memory ---'); // Memory is disabled in this test's default config
     });
 
     it('should prepend system prompt if provider does NOT support it', async () => {
@@ -222,9 +218,10 @@ describe('LLMCordBot Capability Handling', () => {
         const firstUserMessage = modifiedHistory.find(m => m.role === 'user');
         expect(firstUserMessage).toBeDefined();
         // Expect the combined prefix (base + memory block + instructions) followed by the separator
-        const expectedPrefix = 'Test System Prompt\n\n--- User Memory ---\nYou have no memories of the user.\n--- End Memory ---'; // Default memory block
+        const expectedPrefix = 'Test System Prompt'; // Base prompt only, memory is disabled
         const expectedSeparator = "\n\n---\n\n";
-        expect(firstUserMessage?.content).toContain(`${expectedPrefix.trim()}${expectedSeparator}`);
+        expect(firstUserMessage?.content).toContain(`${expectedPrefix.trim()}${expectedSeparator}`); // Check prefix without memory block
+        expect(firstUserMessage?.content).not.toContain('--- User Memory ---');
         expect(firstUserMessage?.content).toContain('Hello bot');
 
         expect(callArgs[1]).toBeUndefined();

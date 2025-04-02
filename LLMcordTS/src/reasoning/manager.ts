@@ -57,7 +57,7 @@ export class ReasoningManager {
      */
     public checkResponseForSignal(responseText: string): boolean {
         // Note: Using placeholder signal detection logic.
-        const signalDetected = responseText.includes(this.config?.signalStart ?? '[REASONING_REQUEST]'); // Use configured signal
+        const signalDetected = responseText.includes(this.config?.signalStart ?? '[USE_REASONING_MODEL]'); // Use configured signal (Corrected Default)
         if (signalDetected) {
             logger.debug('Reasoning signal detected in response.');
         }
@@ -72,8 +72,8 @@ export class ReasoningManager {
      */
     public getReasoningSignal(responseText: string): string | null {
         logger.debug(`[getReasoningSignal] Input text (first 100 chars): ${responseText.substring(0, 100)}`);
-        const startSignal = this.config?.signalStart ?? '[REASONING_REQUEST]';
-        const endSignal = this.config?.signalEnd ?? '[/REASONING_REQUEST]';
+        const startSignal = this.config?.signalStart ?? '[USE_REASONING_MODEL]'; // Corrected Default
+        const endSignal = this.config?.signalEnd ?? '[/USE_REASONING_MODEL]';   // Corrected Default
         // Escape special regex characters in signals
         const escapedStart = startSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const escapedEnd = endSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
