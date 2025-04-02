@@ -3,7 +3,7 @@ import { LLMCordBot } from '@/core/LLMCordBot';
 import { Config, DeepPartial } from '@/types/config';
 import { Logger } from '@/core/logger'; // Keep import if type is needed elsewhere
 import { SQLiteMemoryStorage } from '@/memory/SQLiteMemoryStorage';
-import { ChatMessage } from '@/providers/baseProvider'; // Added import
+// import { ChatMessage } from '@/providers/baseProvider'; // Removed unused import
 
 // Mock dependencies
 import { ProviderFactory } from '@/providers/providerFactory'; // Needed for memory storage constructor
@@ -308,19 +308,19 @@ describe('LLMCordBot - _formatMemoryForSystemPrompt', () => {
     });
 
     it('should return "no relevant memories" block for null memory', () => {
-        const expected = '\n\n--- User Memory ---\nYou have no relevant memories for this conversation.\n--- End Memory ---';
+        const expected = '\n\n--- User Memory ---\nYou have no memories of the user.\n--- End Memory ---'; // Updated expected string
         const result = (bot as any)._formatMemoryForSystemPrompt(null);
         expect(result).toBe(expected);
     });
 
     it('should return "no relevant memories" block for empty string memory', () => {
-        const expected = '\n\n--- User Memory ---\nYou have no relevant memories for this conversation.\n--- End Memory ---';
+        const expected = '\n\n--- User Memory ---\nYou have no memories of the user.\n--- End Memory ---'; // Updated expected string
         const result = (bot as any)._formatMemoryForSystemPrompt('');
         expect(result).toBe(expected);
     });
 
     it('should return "no relevant memories" block for whitespace memory', () => {
-        const expected = '\n\n--- User Memory ---\nYou have no relevant memories for this conversation.\n--- End Memory ---';
+        const expected = '\n\n--- User Memory ---\nYou have no memories of the user.\n--- End Memory ---'; // Updated expected string
         const result = (bot as any)._formatMemoryForSystemPrompt('  \n  ');
         expect(result).toBe(expected);
     });
@@ -333,48 +333,7 @@ describe('LLMCordBot - _formatMemoryForSystemPrompt', () => {
     });
 });
 
-describe('LLMCordBot - _formatMemoryForHistory', () => {
-    let bot: LLMCordBot;
-
-    beforeEach(() => {
-        bot = createMockBot();
-    });
-
-    it('should return a system message object for non-empty memory', () => {
-        const memory = 'User likes pineapples.\nUser lives in Brisbane.';
-        const expected: ChatMessage[] = [{
-            role: 'system',
-            content: 'Relevant past interactions (user memory):\nUser likes pineapples.\nUser lives in Brisbane.'
-        }];
-        const result = (bot as any)._formatMemoryForHistory(memory);
-        expect(result).toEqual(expected);
-    });
-
-    it('should return an empty array for null memory', () => {
-        const result = (bot as any)._formatMemoryForHistory(null);
-        expect(result).toEqual([]);
-    });
-
-    it('should return an empty array for empty string memory', () => {
-        const result = (bot as any)._formatMemoryForHistory('');
-        expect(result).toEqual([]);
-    });
-
-    it('should return an empty array for whitespace memory', () => {
-        const result = (bot as any)._formatMemoryForHistory('  \n  ');
-        expect(result).toEqual([]);
-    });
-
-     it('should escape backticks in memory content for history message', () => {
-        const memory = 'User mentioned ```code block``` example.';
-        const expected: ChatMessage[] = [{
-            role: 'system',
-            content: 'Relevant past interactions (user memory):\nUser mentioned \\`\\`\\`code block\\`\\`\\` example.'
-        }];
-        const result = (bot as any)._formatMemoryForHistory(memory);
-        expect(result).toEqual(expected);
-    });
-});
+// Removed describe block for _formatMemoryForHistory as the method was removed from LLMCordBot
 
 // TODO: Add tests for processMessage focusing on the *injection* points
 // - Mock buildMessageHistory to return known history

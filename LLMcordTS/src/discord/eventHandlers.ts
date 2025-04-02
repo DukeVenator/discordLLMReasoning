@@ -7,6 +7,7 @@ import { Message } from 'discord.js';
 import { PermissionsBitField } from 'discord.js';
 import { LLMCordBot } from '../core/LLMCordBot'; // Import the main bot class type
 import { checkPermissions } from '../utils/permissions'; // Import permissions check
+import { MessageProcessor } from '../processing/MessageProcessor'; // Added import
 // import { MemoryCommandHandler } from '../commands/memoryCommandHandler'; // Removed unused import
 
 /**
@@ -21,6 +22,28 @@ export async function onReady(bot: LLMCordBot): Promise<void> { // Make the func
     bot.logger.info(`Logged in as ${bot.client.user.tag}!`);
     bot.logger.info(`Bot ID: ${bot.client.user.id}`);
     bot.logger.info('Bot is ready!');
+
+    // Instantiate MessageProcessor now that client ID and other dependencies are available
+    if (!bot.client.user?.id) {
+        bot.logger.error('CRITICAL: Client user ID is not available after ready event. Cannot initialize MessageProcessor.');
+        // Handle this critical error appropriately, maybe exit or prevent further operation
+        return;
+    }
+    try {
+        bot.messageProcessor = new MessageProcessor(
+            bot.config,
+            bot.logger,
+            bot.llmProvider,
+            bot.httpClient,
+            bot.messageNodeCache, // Pass the cache from the bot instance
+            bot.client.user.id // Pass the confirmed client ID
+        );
+        bot.logger.info('MessageProcessor initialized successfully.');
+    } catch (error) {
+        bot.logger.error('Failed to initialize MessageProcessor:', error);
+        // Handle this critical error appropriately
+        return;
+    }
 
     // Construct and log invite URL
     const permissions = new PermissionsBitField([

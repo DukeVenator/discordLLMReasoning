@@ -125,36 +125,38 @@ describe('GeminiProvider generateStream', () => {
             { role: 'user', parts: [{ text: 'Hello' }] }, // Include last user message in contents
         ]);
 
-        // Check systemInstruction using bracket notation
+        // Check systemInstruction inside the 'config' object
         if (expectedRequestProps['systemPrompt']) {
-            expect(actualRequest.systemInstruction).toEqual({ // Check top-level systemInstruction
-                role: 'system',
-                parts: [{ text: expectedRequestProps['systemPrompt'] }],
-            });
+            expect(actualRequest.config?.systemInstruction).toEqual([{ text: expectedRequestProps['systemPrompt'] }]); // Check nested systemInstruction (no role needed here)
         } else {
-            expect(actualRequest.systemInstruction).toBeUndefined();
+            expect(actualRequest.config?.systemInstruction).toBeUndefined();
         }
 
-        // Check generationConfig using bracket notation (now top-level)
+        // Check generationConfig inside the 'config' object
         if (expectedRequestProps['generationConfig']) {
-            expect(actualRequest.generationConfig).toEqual(expectedRequestProps['generationConfig']);
+            // Check that all expected generationConfig props are present in actualRequest.config
+            for (const key in expectedRequestProps['generationConfig']) {
+                expect(actualRequest.config?.[key]).toEqual(expectedRequestProps['generationConfig'][key]);
+            }
         } else {
-            // If not expecting specific gen config, ensure it's either undefined or empty
-             expect(actualRequest.generationConfig ?? {}).toEqual({});
+            // If not expecting specific gen config, ensure the relevant keys are not in config (or config is undefined)
+            expect(actualRequest.config?.temperature).toBeUndefined();
+            expect(actualRequest.config?.maxOutputTokens).toBeUndefined();
+            // Add checks for other potential generationConfig keys if needed
         }
 
-        // Check tools using bracket notation (now top-level)
+        // Check tools inside the 'config' object
         if (expectedRequestProps['tools']) {
-            expect(actualRequest.tools).toEqual(expectedRequestProps['tools']);
+            expect(actualRequest.config?.tools).toEqual(expectedRequestProps['tools']);
         } else {
-            expect(actualRequest.tools).toBeUndefined();
+            expect(actualRequest.config?.tools).toBeUndefined();
         }
 
-        // Check toolConfig using bracket notation (now top-level)
+        // Check toolConfig inside the 'config' object
         if (expectedRequestProps['toolConfig']) {
-            expect(actualRequest.toolConfig).toEqual(expectedRequestProps['toolConfig']);
+            expect(actualRequest.config?.toolConfig).toEqual(expectedRequestProps['toolConfig']);
         } else {
-            expect(actualRequest.toolConfig).toBeUndefined();
+            expect(actualRequest.config?.toolConfig).toBeUndefined();
         }
     };
 

@@ -9,7 +9,7 @@ import {
   GatewayIntentBits,
   Partials,
   Message,
-  ChannelType,
+  // ChannelType, // Removed unused import
   EmbedBuilder,
   TextChannel,
   DMChannel,
@@ -34,11 +34,13 @@ import {
 } from '../providers/baseProvider'; // Added GenerationOptions, StreamChunk
 import { SQLiteMemoryStorage } from '@/memory/SQLiteMemoryStorage'; // Use SQLite implementation
 import { ReasoningManager } from '@/reasoning/manager';
-import { MessageNode } from '@/types/messageNode';
+// Removed MessageNode import, using IMessageNode from message.ts now
 import { ToolCallRequest } from '@/types/tools'; // Removed unused ToolDefinition
 import { Logger } from '@/core/logger'; // Import the Logger class
 import { MemoryCommandHandler } from '@/commands/handlers/memoryCommandHandler'; // Corrected path
 import { ToolRegistry } from './toolRegistry'; // Import ToolRegistry
+import { MessageProcessor } from '@/processing/MessageProcessor'; // Added
+import { IMessageNode } from '@/types/message'; // Removed unused IWarning import
 
 // Placeholder imports for future components
 // import { ProviderManager } from '../providers/providerManager';
@@ -74,11 +76,13 @@ export class LLMCordBot {
   /** Handles memory-related commands (if memory enabled). Initialized in `initialize()`. */
   public memoryCommandHandler: MemoryCommandHandler | null = null;
   /** Cache for recently processed MessageNode objects to avoid redundant processing. */
-  public messageNodeCache: Map<string, MessageNode> = new Map(); // Cache for processed messages
+  public messageNodeCache: Map<string, IMessageNode> = new Map(); // Cache for processed messages (Updated type)
   /** The root logger instance for the application. Initialized in `initialize()`. */
   public logger!: Logger;
   /** Manages available tools and their execution. Initialized in `initialize()`. */
   public toolRegistry!: ToolRegistry;
+  /** Handles processing messages and building history. Initialized AFTER client is ready. */
+  public messageProcessor!: MessageProcessor; // Added
 
   /**
    * Creates an instance of LLMCordBot.
@@ -260,323 +264,8 @@ export class LLMCordBot {
    * @returns {Promise<void>}
    * @private
    */
-  private async processMessageNode(
-    message: Message,
-    node: MessageNode,
-  ): Promise<void> {
-    node.messageId = message.id;
-    node.role =
-      message.author.bot && message.author.id === this.client.user?.id
-        ? 'assistant'
-        : 'user';
-    node.userId = node.role === 'user' ? message.author.id : null;
-
-    // Clean content - remove bot mention if applicable
-    let cleanedContent = message.content;
-    // Use toString() to get the mention string like <@USER_ID>
-    const botMention = this.client.user?.toString();
-    if (
-      botMention &&
-      message.channel.type !== ChannelType.DM &&
-      cleanedContent.startsWith(botMention)
-    ) {
-      cleanedContent = cleanedContent.substring(botMention.length).trim();
-    }
-    node.text = cleanedContent;
-
-    // Process attachments
-    node.images = [];
-    node.hasBadAttachments = false;
-    // Use dynamic provider capability check
-    const providerSupportsVision = this.llmProvider
-      ? this.llmProvider.supportsVision()
-      : false; // Check provider capability dynamically
-    const maxAttachmentSize =
-      this.config.llm?.maxAttachmentSizeBytes ?? 10 * 1024 * 1024; // Default 10MB, make configurable
-
-    if (message.attachments.size > 0 && providerSupportsVision) {
-      const supportedImageTypes = ['png', 'jpeg', 'jpg', 'gif', 'webp']; // Common supported types
-      this.logger.debug(
-        `[Node ${message.id}] Processing ${message.attachments.size} attachments...`,
-      );
-
-      for (const attachment of message.attachments.values()) {
-        const fileExtension = attachment.name?.split('.').pop()?.toLowerCase();
-        const isSupportedType =
-          attachment.contentType?.startsWith('image/') &&
-          fileExtension &&
-          supportedImageTypes.includes(fileExtension);
-        const isWithinSizeLimit = attachment.size <= maxAttachmentSize;
-
-        if (isSupportedType && isWithinSizeLimit) {
-          try {
-            // Ensure contentType is not null before proceeding
-            if (!attachment.contentType) {
-              node.hasBadAttachments = true;
-              this.logger.warn(
-                `[Node ${message.id}] Ignoring attachment ${attachment.name} due to missing content type.`,
-              );
-              continue; // Skip to the next attachment
-            }
-
-            this.logger.debug(
-              `[Node ${message.id}] Fetching image: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes) from ${attachment.url}`,
-            );
-            const response = await this.httpClient.get(attachment.url, {
-              responseType: 'arraybuffer', // Fetch as raw bytes
-              timeout: this.config.llm?.requestTimeoutMs || 15000, // Use configured timeout or default
-            });
-
-            if (response.status === 200 && response.data) {
-              const base64Data = Buffer.from(response.data, 'binary').toString(
-                'base64',
-              );
-              // Use a structure compatible with multimodal APIs (like Anthropic)
-              node.images.push({
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: attachment.contentType, // Now guaranteed to be string
-                  data: base64Data,
-                },
-              });
-              this.logger.debug(
-                `[Node ${message.id}] Successfully fetched and encoded image: ${attachment.name}`,
-              );
-            } else {
-              throw new Error(`Received status ${response.status}`);
-            }
-          } catch (error: any) {
-            node.hasBadAttachments = true;
-            this.logger.warn(
-              `[Node ${message.id}] Failed to fetch or encode image ${attachment.name} from ${attachment.url}: ${error.message}`,
-            );
-          }
-        } else {
-          node.hasBadAttachments = true;
-          if (!isSupportedType) {
-            this.logger.debug(
-              `[Node ${message.id}] Ignoring unsupported attachment type: ${attachment.name} (${attachment.contentType ?? 'N/A'})`,
-            );
-          } else if (!isWithinSizeLimit) {
-            this.logger.debug(
-              `[Node ${message.id}] Ignoring attachment due to size limit: ${attachment.name} (${attachment.size} > ${maxAttachmentSize} bytes)`,
-            );
-          }
-        }
-      }
-    } else if (message.attachments.size > 0 && !providerSupportsVision) {
-      node.hasBadAttachments = true; // Mark as bad if provider doesn't support vision
-      this.logger.debug(
-        `[Node ${message.id}] Ignoring ${message.attachments.size} attachments as provider does not support vision.`,
-      );
-    }
-
-    // Fetch parent message if it's a reply
-    node.parentMessage = null;
-    node.fetchParentFailed = false;
-    if (message.reference?.messageId) {
-      try {
-        node.parentMessage = await message.channel.messages.fetch(
-          message.reference.messageId,
-        );
-      } catch (error) {
-        node.fetchParentFailed = true;
-        this.logger.warn(
-          `[Node ${message.id}] Failed to fetch parent message ${message.reference.messageId}: ${error}`,
-        );
-      }
-    }
-    this.logger.debug(
-      `[Node ${message.id}] Processed: role=${node.role}, images=${node.images.length}, parent=${node.parentMessage?.id ?? 'None'}, text=${(node.text ?? '').substring(0, 50)}...`,
-    );
-  }
-
-  /**
-   * Builds the message history array in the format expected by the LLM provider.
-   * Traverses the reply chain of the input message.
-   * @param latestMessage - The most recent discord.js Message object in the chain.
-   * @returns A tuple containing the array of formatted messages and a set of user-facing warnings.
-   */
-  /**
-   * Builds the message history array in the format expected by the LLM provider.
-   * Traverses the reply chain starting from the `latestMessage`, processing each message
-   * using `processMessageNode` (utilizing cache) and formatting it for the LLM.
-   * Enforces limits on the number of messages, text length, and images based on configuration
-   * (or hardcoded defaults currently).
-   * Collects user-facing warnings about potential truncation or ignored content.
-   * @param latestMessage - The most recent discord.js Message object in the conversation chain.
-   * @returns {Promise<[ChatMessage[], Set<string>]>} A promise resolving to a tuple containing:
-   *   - An array of formatted ChatMessage objects for the LLM.
-   *   - A Set of string warnings to potentially show the user.
-   */
-  public async buildMessageHistory(
-    latestMessage: Message,
-  ): Promise<[ChatMessage[], Set<string>]> {
-    const llmHistory: ChatMessage[] = [];
-    const userWarnings: Set<string> = new Set();
-    let currentMessage: Message | null = latestMessage;
-
-    // Get limits from config (using defaults if not specified)
-    const maxMessages = this.config.memory.maxHistoryLength ?? 25;
-    const maxTextLength = this.config.llm?.defaultMaxTokens ?? 4000; // Use defaultMaxTokens as proxy
-    const maxImages = this.config.memory.maxImages ?? 2; // Use configured value or default to 2
-
-    this.logger.debug(
-      `[History] Building for ${latestMessage.id} (max_messages=${maxMessages}, max_images=${maxImages})`,
-    );
-
-    while (currentMessage && llmHistory.length < maxMessages) {
-      const messageId: string = currentMessage.id; // Explicitly type messageId
-      let node: MessageNode | undefined = this.messageNodeCache.get(messageId);
-      let isNewNode = false;
-
-      if (!node) {
-        isNewNode = true;
-        node = {
-          text: null,
-          images: [],
-          role: 'user',
-          userId: null,
-          hasBadAttachments: false,
-          fetchParentFailed: false,
-          parentMessage: null,
-          messageId: messageId,
-        };
-        this.logger.debug(
-          `[History] Processing new node for message ${messageId}`,
-        );
-        await this.processMessageNode(currentMessage, node);
-        this.messageNodeCache.set(messageId, node);
-      } else {
-        this.logger.debug(
-          `[History] Using cached node for message ${messageId}`,
-        );
-      }
-
-      // --- Format node for LLM ---
-      const imagesToSend = node.images.slice(0, maxImages);
-      const textToSend = (node.text ?? '').substring(0, maxTextLength);
-      // Type is now string | ChatMessageContentPart[]
-      let apiContent: string | ChatMessageContentPart[] = '';
-      let userName: string | undefined = undefined;
-
-      // Check provider capabilities dynamically
-      const providerSupportsUsernames = this.llmProvider
-        ? this.llmProvider.supportsUsernames()
-        : false;
-      const providerSupportsVision = this.llmProvider
-        ? this.llmProvider.supportsVision()
-        : false; // Use dynamic check
-      let userPrefix = '';
-      if (node.role === 'user' && !providerSupportsUsernames) {
-        const safeDisplayName = currentMessage.author.displayName.replace(
-          /[^a-zA-Z0-9 _-]/g,
-          '',
-        );
-        userPrefix = `User (${safeDisplayName}/${node.userId}): `;
-      }
-      const prefixedTextToSend = userPrefix + textToSend;
-
-      if (node.role === 'user' && providerSupportsUsernames && node.userId) {
-        userName = node.userId.replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 64);
-      }
-
-      if (imagesToSend.length > 0 && providerSupportsVision) {
-        // Explicitly type contentParts to match ChatMessageContentPart[]
-        const contentParts: ChatMessageContentPart[] = [];
-        if (prefixedTextToSend) {
-          contentParts.push({ type: 'text', text: prefixedTextToSend });
-        }
-        contentParts.push(...imagesToSend);
-        apiContent = contentParts;
-        this.logger.debug(
-          `[History] Formatted node ${messageId} as multimodal (${imagesToSend.length} images)`,
-        );
-      } else {
-        // No images or provider doesn't support vision
-        if (prefixedTextToSend) {
-          apiContent = prefixedTextToSend;
-        } else if (
-          node.role === 'assistant' &&
-          currentMessage?.embeds[0]?.description
-        ) {
-          // If assistant message text is empty, try using the first embed's description
-          const embedText = currentMessage.embeds[0].description.substring(
-            0,
-            maxTextLength,
-          );
-          apiContent = embedText; // Use embed description as content
-          this.logger.debug(
-            `[History] Using embed description for assistant node ${messageId}`,
-          );
-        } else {
-          apiContent = ''; // Ensure it's an empty string if no text or embed description
-        }
-      }
-
-      // Determine if the message has actual content (text or parts)
-      const hasContent = (typeof apiContent === 'string' && apiContent.trim()) || (Array.isArray(apiContent) && apiContent.length > 0);
-
-      // Push user messages ONLY if they have actual content.
-      // Push ALL assistant messages to maintain conversation flow, using extracted embed text or empty string.
-      if (node.role === 'assistant' || (node.role === 'user' && hasContent)) {
-           const messageEntry: ChatMessage = {
-               role: node.role,
-               // Use the determined apiContent (could be embed text or empty string for assistant)
-               content: apiContent // apiContent is already guaranteed to be string or Part[] here
-           };
-           if (userName) { messageEntry.name = userName; } // Add name for user messages if supported
-           llmHistory.push(messageEntry);
-           // this.logger.debug(`[History] Pushing to llmHistory: role=${messageEntry.role}, content=${typeof messageEntry.content === 'string' ? messageEntry.content.substring(0,30)+'...' : '[Parts]'}`); // Removed diagnostic log
-      } else if (isNewNode) {
-           // Log only if a new user node is skipped due to no content
-           this.logger.debug(
-             `[History] User node ${messageId} resulted in empty content after formatting. Skipping.`,
-           );
-      }
-
-      // --- Collect Warnings ---
-      if ((node.text?.length ?? 0) > maxTextLength) {
-        userWarnings.add(
-          `⚠️ Max ${maxTextLength.toLocaleString()} characters/message`,
-        );
-      }
-      if (node.images.length > maxImages) {
-        // Handle maxImages = 0 case specifically
-        userWarnings.add(
-          maxImages === 0
-            ? '⚠️ Max 0 images/message'
-            : `⚠️ Max ${maxImages} image${Number(maxImages) === 1 ? '' : 's'}/message`,
-        );
-      }
-      if (node.hasBadAttachments) {
-        userWarnings.add('⚠️ Unsupported attachments ignored');
-      }
-      if (node.fetchParentFailed) {
-        userWarnings.add("⚠️ Couldn't link full conversation history");
-      } else if (node.parentMessage && llmHistory.length === maxMessages) {
-        // Cast llmHistory.length to number for comparison
-        userWarnings.add(
-          `⚠️ Using last ${llmHistory.length} message${Number(llmHistory.length) === 1 ? '' : 's'}`,
-        );
-      }
-
-      // Move to parent
-      currentMessage = node.parentMessage;
-      if (currentMessage) {
-        this.logger.debug(
-          `[History] Moving to parent message ${currentMessage.id}`,
-        );
-      }
-    } // End while loop
-
-    llmHistory.reverse();
-    this.logger.debug(
-      `[History] Final history size: ${llmHistory.length} messages`,
-    );
-    return [llmHistory, userWarnings];
-  }
+  // Removed processMessageNode and buildMessageHistory methods.
+  // Their logic is now in the MessageProcessor class.
 
   /**
    * Registers the necessary Discord event handlers.
@@ -803,7 +492,8 @@ export class LLMCordBot {
     );
 
     // --- Build History ---
-    const [history, userWarnings] = await this.buildMessageHistory(message);
+    // Use the messageProcessor instance to build history
+    const { history, warnings: userWarnings } = await this.messageProcessor.buildMessageHistory(message); // Updated call and return type handling
 
     // --- Fetch User Memory (Consolidated) ---
     const userId = message.author.id;
@@ -819,7 +509,8 @@ export class LLMCordBot {
           `[${message.id}] Failed to retrieve memory for user ${userId}:`,
           memError,
         );
-        userWarnings.add('⚠️ Failed to load user memory');
+        // Add warning as an IWarning object
+        userWarnings.push({ type: 'Generic', message: '⚠️ Failed to load user memory' });
       }
     }
 
@@ -837,11 +528,12 @@ export class LLMCordBot {
       this.logger.warn(
         `[${message.id}] No user/assistant content found in message or its history (after memory injection). Aborting.`,
       );
-      if (userWarnings.size > 0) {
+      if (userWarnings.length > 0) { // Check length of array
         try {
           // Combine warnings with the reason for stopping
           const stopReason = 'No message content to process';
-          const combinedWarnings = Array.from(userWarnings).join(', ');
+          // Format warnings from IWarning objects
+          const combinedWarnings = userWarnings.map(w => w.message).join(', ');
           await message.reply(
             `Processing stopped: ${stopReason}${combinedWarnings ? ` (${combinedWarnings})` : ''}`,
           );
@@ -1766,7 +1458,7 @@ export class LLMCordBot {
       // --- Final Update ---
       // Add user warnings to the final response if any exist
       const warningsString =
-        userWarnings.size > 0
+        userWarnings.length > 0 // Corrected from .size to .length for array
           ? `\n\n*(${Array.from(userWarnings).join(', ')})*`
           : '';
       const finalContentWithWarnings =

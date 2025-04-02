@@ -6,12 +6,16 @@ import { SQLiteMemoryStorage } from '@/memory/SQLiteMemoryStorage';
 import { BaseProvider, ChatMessage } from '@/providers/baseProvider'; // Corrected import name
 import { ProviderFactory } from '@/providers/providerFactory';
 import { Message } from 'discord.js';
+import { MessageProcessor } from '@/processing/MessageProcessor'; // Added
+import { AxiosInstance } from 'axios'; // Added
+import { IMessageNode } from '@/types/message'; // Added
 
 // Mock dependencies
 vi.mock('@/core/logger');
 vi.mock('@/memory/SQLiteMemoryStorage');
 vi.mock('@/providers/providerFactory');
-vi.mock('@/providers/baseProvider'); // Mock BaseLLMProvider if needed for generateStream
+vi.mock('@/providers/baseProvider'); // Mock BaseProvider if needed for generateStream
+vi.mock('@/processing/MessageProcessor'); // Mock the actual MessageProcessor class
 vi.mock('@/core/config'); // Assuming loadConfig is mocked or config provided directly
 
 // Helper to create a mock Discord message
@@ -95,14 +99,35 @@ const createMockBotWithMocks = (configOverrides: DeepPartial<Config> = {}) => {
     // Mock Tool Registry minimally
     bot.toolRegistry = { getToolDefinitions: vi.fn().mockReturnValue([]) } as any;
 
-    // Mock buildMessageHistory
-    bot.buildMessageHistory = vi.fn();
+    // Mock HttpClient
+    const mockHttpClient = { get: vi.fn() } as unknown as AxiosInstance;
+    bot.httpClient = mockHttpClient; // Assign to bot instance if needed elsewhere, though MP takes it directly
 
+    // Mock MessageNodeCache
+    const mockMessageNodeCache = new Map<string, IMessageNode>();
+    bot.messageNodeCache = mockMessageNodeCache; // Assign to bot instance
+
+    // Instantiate MessageProcessor with mocks
+    // Ensure clientId is available in config
+    const clientId = bot.config.discord?.clientId ?? 'mock-client-id-fallback';
+    bot.messageProcessor = new MessageProcessor(
+        bot.config,
+        bot.logger,
+        bot.llmProvider,
+        mockHttpClient,
+        mockMessageNodeCache,
+        clientId
+    );
+
+    // Mock the buildMessageHistory method ON the messageProcessor instance
+    vi.spyOn(bot.messageProcessor, 'buildMessageHistory').mockResolvedValue({ history: [], warnings: [] }); // Default mock
     return {
         bot,
         mockMemoryStorage: mockMemoryStorageInstance,
         mockLlmProvider,
-        mockBuildMessageHistory: bot.buildMessageHistory as Mock,
+        mockMessageProcessor: bot.messageProcessor, // Return the instance
+        // Keep mockBuildMessageHistory reference for convenience in tests
+        mockBuildMessageHistory: bot.messageProcessor.buildMessageHistory as Mock,
         // No need to return toolRegistry mock explicitly unless needed in tests
     };
 };
@@ -131,7 +156,8 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
 
         // Setup mocks
         // Return a *copy* of initialHistory to prevent potential mutation issues
-        mockBuildMessageHistory.mockResolvedValue([[...initialHistory], new Set<string>()]);
+        // Update mock to return the object structure { history, warnings }
+        mockBuildMessageHistory.mockResolvedValue({ history: [...initialHistory], warnings: [] });
         (mockMemoryStorage.getMemory as Mock).mockResolvedValue(userMemory);
         // Mock generateStream to return a minimal async generator
         (mockLlmProvider.generateStream as Mock).mockImplementation(async function* () { yield { content: 'test chunk' }; });
@@ -178,7 +204,7 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
 
         // Setup mocks
         // Return a *copy* of initialHistory
-        mockBuildMessageHistory.mockResolvedValue([[...initialHistory], new Set<string>()]);
+        mockBuildMessageHistory.mockResolvedValue({ history: [...initialHistory], warnings: [] });
         (mockMemoryStorage.getMemory as Mock).mockResolvedValue(null); // No memory found
         // Mock generateStream to return a minimal async generator
         (mockLlmProvider.generateStream as Mock).mockImplementation(async function* () { yield { content: 'test chunk' }; });
@@ -211,7 +237,7 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
 
         // Setup mocks
         // Return a *copy* of initialHistory
-        mockBuildMessageHistory.mockResolvedValue([[...initialHistory], new Set<string>()]);
+        mockBuildMessageHistory.mockResolvedValue({ history: [...initialHistory], warnings: [] });
         // Mock generateStream to return a minimal async generator
         (mockLlmProvider.generateStream as Mock).mockImplementation(async function* () { yield { content: 'test chunk' }; });
 
@@ -244,7 +270,7 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
         const initialHistory: ChatMessage[] = [{ role: 'user', name: userId, content: 'Test message' }];
 
         // Setup mocks
-        mockBuildMessageHistory.mockResolvedValue([[...initialHistory], new Set<string>()]);
+        mockBuildMessageHistory.mockResolvedValue({ history: [...initialHistory], warnings: [] });
         (mockMemoryStorage.getMemory as Mock).mockResolvedValue(null); // No actual memory needed for this test
         (mockLlmProvider.generateStream as Mock).mockImplementation(async function* () { yield { content: 'response' }; });
 
@@ -270,7 +296,7 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
         const initialHistory: ChatMessage[] = [{ role: 'user', name: userId, content: 'Test message' }];
 
         // Setup mocks
-        mockBuildMessageHistory.mockResolvedValue([[...initialHistory], new Set<string>()]);
+        mockBuildMessageHistory.mockResolvedValue({ history: [...initialHistory], warnings: [] });
         (mockLlmProvider.generateStream as Mock).mockImplementation(async function* () { yield { content: 'response' }; });
 
         await bot.processMessage(mockMessage);
@@ -300,7 +326,8 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
         const fetchError = new Error('Database connection failed');
 
         // Setup mocks
-        mockBuildMessageHistory.mockResolvedValue([[...initialHistory], new Set<string>()]);
+        // Update mock to return warnings array
+        mockBuildMessageHistory.mockResolvedValue({ history: [...initialHistory], warnings: [{ type: 'Generic', message: '⚠️ Failed to load user memory' }] });
         (mockMemoryStorage.getMemory as Mock).mockRejectedValue(fetchError); // Simulate error
         (mockLlmProvider.generateStream as Mock).mockImplementation(async function* () { yield { content: 'response' }; });
 
@@ -316,7 +343,7 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
         expect(systemPromptArg).toContain(baseSystemPrompt);
         // Expect the "no relevant memories" block because _formatMemoryForSystemPrompt handles null
         expect(systemPromptArg).toContain('--- User Memory ---');
-        expect(systemPromptArg).toContain('You have no relevant memories');
+        expect(systemPromptArg).toContain('You have no memories of the user.'); // Updated expected string
         expect(systemPromptArg).toContain('**Memory Instructions:**'); // Instructions should still be added
 
         const [historyArg] = (mockLlmProvider.generateStream as Mock).mock.calls[0]!;
@@ -334,7 +361,7 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
         const initialHistory: ChatMessage[] = [{ role: 'user', name: userId, content: 'Test message' }];
 
         // Setup mocks
-        mockBuildMessageHistory.mockResolvedValue([[...initialHistory], new Set<string>()]);
+        mockBuildMessageHistory.mockResolvedValue({ history: [...initialHistory], warnings: [] });
         (mockMemoryStorage.getMemory as Mock).mockResolvedValue('   \n   '); // Whitespace memory
         (mockLlmProvider.generateStream as Mock).mockImplementation(async function* () { yield { content: 'response' }; });
 
@@ -351,7 +378,7 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
         expect(systemPromptArg).toContain('**Memory Instructions:**');
         // Expect the "no relevant memories" block because _formatMemoryForSystemPrompt handles empty/whitespace
         expect(systemPromptArg).toContain('--- User Memory ---');
-        expect(systemPromptArg).toContain('You have no relevant memories');
+        expect(systemPromptArg).toContain('You have no memories of the user.'); // Updated expected string
 
         const [historyArg] = (mockLlmProvider.generateStream as Mock).mock.calls[0]!;
         // History should not contain the memory message
@@ -372,7 +399,7 @@ describe('LLMCordBot - processMessage Memory Integration', () => {
         const initialHistory: ChatMessage[] = [{ role: 'user', name: userId, content: 'Test message' }];
 
         // Setup mocks
-        mockBuildMessageHistory.mockResolvedValue([[...initialHistory], new Set<string>()]);
+        mockBuildMessageHistory.mockResolvedValue({ history: [...initialHistory], warnings: [] });
         (mockMemoryStorage.getMemory as Mock).mockResolvedValue(null); // No memory content needed
         (mockLlmProvider.generateStream as Mock).mockImplementation(async function* () { yield { content: 'response' }; });
 
