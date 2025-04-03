@@ -103,6 +103,9 @@ export interface Config {
     maxTokensPerMessage?: number; // Limit message length stored
     /** Maximum number of images to include in the history sent to the LLM. */
     maxImages?: number;
+    /** Whether to publish memory changes as a separate message. Defaults to false. */
+    publishMemory?: boolean;
+
     /** Configuration for LLM-suggested memory updates. */
     suggestions?: {
       /** The opening tag for memory append suggestions. Defaults to '[MEM_APPEND]'. */

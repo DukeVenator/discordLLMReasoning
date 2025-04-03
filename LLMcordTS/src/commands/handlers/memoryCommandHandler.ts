@@ -1,19 +1,18 @@
 import { ChatInputCommandInteraction } from 'discord.js';
-import { IMemoryStorage } from '@/memory/SQLiteMemoryStorage'; // Corrected import path
+import { IMemoryManager } from '@/types/memory'; // Use the manager interface
 // import { Config } from '@/core/config'; // Removed unused import
 import { logger } from '@/core/logger';
 
 type LoggerInstance = typeof logger;
 
 export class MemoryCommandHandler {
-    private memoryStorage: IMemoryStorage;
+    private memoryManager: IMemoryManager; // Rename and change type
     // private config: Config; // Removed unused property
     private logger: LoggerInstance;
 
-    constructor(memoryStorage: IMemoryStorage, /* config: Config, */ loggerInstance: LoggerInstance) { // Removed unused config parameter
-        this.memoryStorage = memoryStorage;
-        // this.config = config; // Removed assignment of unused property
-        this.logger = loggerInstance;
+    constructor(memoryManager: IMemoryManager, loggerInstance: LoggerInstance) { // Update constructor parameter
+        this.memoryManager = memoryManager; // Assign to the new property
+        this.logger = loggerInstance.getSubLogger({ name: 'MemoryCommandHandler' }); // Create sub-logger
     }
 
     async handle(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -35,13 +34,13 @@ export class MemoryCommandHandler {
                     await this.handleForget(interaction, userId);
                     break;
                 case 'edit':
-                    await this.handleEdit(interaction, userId);
+                    await this.handleEdit(interaction);
                     break;
                 case 'delete':
-                    await this.handleDelete(interaction, userId);
+                    await this.handleDelete(interaction);
                     break;
                 case 'view':
-                    await this.handleView(interaction, userId);
+                    await this.handleView(interaction);
                     break;
                 default:
                     await interaction.reply({ content: 'Unknown memory subcommand.', ephemeral: true });
@@ -57,11 +56,15 @@ export class MemoryCommandHandler {
     }
 
     private async handleShow(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
-        const memory = await this.memoryStorage.getMemory(userId);
-        if (memory) {
-            // Consider potential length limits for Discord messages
-            const content = memory.length > 1900 ? memory.substring(0, 1900) + '... (truncated)' : memory;
-            await interaction.reply({ content: `Your current memory:\n\`\`\`\n${content}\n\`\`\``, ephemeral: true });
+        // Use getUserMemory which returns an array
+        const memories = await this.memoryManager.getUserMemory(userId);
+        if (memories && memories.length > 0) {
+            // Format the array of memories into a string for display
+            const formattedMemory = memories
+                .map(mem => `[${mem.id.substring(0, 6)}] (${mem.type}): ${mem.content}`) // Show ID prefix and type
+                .join('\n');
+            const content = formattedMemory.length > 1900 ? formattedMemory.substring(0, 1900) + '... (truncated)' : formattedMemory;
+            await interaction.reply({ content: `Your current memory entries:\n\`\`\`\n${content}\n\`\`\``, ephemeral: true });
         } else {
             await interaction.reply({ content: 'You have no memory stored.', ephemeral: true });
         }
@@ -69,27 +72,32 @@ export class MemoryCommandHandler {
 
     private async handleAppend(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
         const textToAppend = interaction.options.getString('text', true);
-        await this.memoryStorage.appendMemory(userId, textToAppend);
+        // Use addMemory with a default type like 'recall' or 'core'
+        await this.memoryManager.addMemory(userId, textToAppend, 'recall');
         await interaction.reply({ content: 'Text appended to your memory.', ephemeral: true });
     }
 
     private async handleReplace(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
         const newText = interaction.options.getString('text', true);
-        await this.memoryStorage.setMemory(userId, newText);
+        // Use replaceMemory
+        await this.memoryManager.replaceMemory(userId, newText, 'core'); // Assume replace sets 'core' memory
         await interaction.reply({ content: 'Your memory has been replaced.', ephemeral: true });
     }
 
     private async handleForget(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
-        await this.memoryStorage.deleteMemory(userId);
+        // Use clearUserMemory
+        await this.memoryManager.clearUserMemory(userId);
         await interaction.reply({ content: 'Your memory has been cleared.', ephemeral: true });
     }
 
-    private async handleEdit(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
+    private async handleEdit(interaction: ChatInputCommandInteraction): Promise<void> { // Removed unused userId
         const entryId = interaction.options.getString('id', true);
         const newContent = interaction.options.getString('content', true);
 
         // Note: This relies on the placeholder implementation in storage for now.
-        const success = await this.memoryStorage.editMemoryById(userId, entryId, newContent);
+        // Use updateMemoryById - Note: userId is not needed for manager method
+        // Note: updateMemoryById doesn't need userId
+        const success = await this.memoryManager.updateMemoryById(entryId, { content: newContent });
 
         if (success) {
             await interaction.reply({ content: `Memory entry \`${entryId}\` updated successfully.`, ephemeral: true });
@@ -99,11 +107,13 @@ export class MemoryCommandHandler {
         }
     }
 
-    private async handleDelete(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
+    private async handleDelete(interaction: ChatInputCommandInteraction): Promise<void> { // Removed unused userId
         const entryId = interaction.options.getString('id', true);
 
         // Note: This relies on the placeholder implementation in storage for now.
-        const success = await this.memoryStorage.deleteMemoryById(userId, entryId);
+        // Use deleteMemoryById - Note: userId is not needed for manager method
+        // Note: deleteMemoryById doesn't need userId
+        const success = await this.memoryManager.deleteMemoryById(entryId);
 
         if (success) {
             await interaction.reply({ content: `Memory entry \`${entryId}\` deleted successfully.`, ephemeral: true });
@@ -113,15 +123,18 @@ export class MemoryCommandHandler {
         }
     }
 
-     private async handleView(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
+     private async handleView(interaction: ChatInputCommandInteraction): Promise<void> { // Removed unused userId
         const entryId = interaction.options.getString('id', true);
 
         // Note: This relies on the placeholder implementation in storage for now.
-        const memoryEntry = await this.memoryStorage.getMemoryById(userId, entryId);
+        // Use getMemoryById - Note: userId is not needed for manager method
+        // Note: getMemoryById doesn't need userId
+        const memoryEntry = await this.memoryManager.getMemoryById(entryId);
 
         if (memoryEntry) {
-            const content = memoryEntry.length > 1900 ? memoryEntry.substring(0, 1900) + '... (truncated)' : memoryEntry;
-            await interaction.reply({ content: `Memory entry \`${entryId}\`:\n\`\`\`\n${content}\n\`\`\``, ephemeral: true });
+            // memoryEntry is now an IMemory object
+            const content = memoryEntry.content.length > 1900 ? memoryEntry.content.substring(0, 1900) + '... (truncated)' : memoryEntry.content;
+            await interaction.reply({ content: `Memory entry \`${entryId}\` (${memoryEntry.type}):\n\`\`\`\n${content}\n\`\`\``, ephemeral: true });
         } else {
              // This message might be inaccurate until storage is fully implemented
             await interaction.reply({ content: `Could not find memory entry \`${entryId}\`. (Note: ID-based viewing might not be fully implemented yet).`, ephemeral: true });

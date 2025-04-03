@@ -25,14 +25,14 @@ import { FinishReason } from '@/providers/baseProvider';
 import { RateLimiter } from '@/utils/rateLimiter';
 import { ProviderFactory } from '@/providers/providerFactory';
 import {
-  BaseProvider,
-  ChatMessage,
-  ChatMessageContentPart,
-  ChatMessageContentPartText,
-  GenerationOptions,
-  StreamChunk,
+    BaseProvider,
+    ChatMessage,
+    ChatMessageContentPart,
+    ChatMessageContentPartText,
+    GenerationOptions,
+    StreamChunk,
 } from '../providers/baseProvider'; // Added GenerationOptions, StreamChunk
-import { SQLiteMemoryStorage } from '@/memory/SQLiteMemoryStorage'; // Use SQLite implementation
+// Removed SQLiteMemoryStorage import
 import { ReasoningManager } from '@/reasoning/manager';
 // Removed MessageNode import, using IMessageNode from message.ts now
 import { ToolCallRequest } from '@/types/tools'; // Removed unused ToolDefinition
@@ -42,11 +42,11 @@ import { ToolRegistry } from './toolRegistry'; // Import ToolRegistry
 import { MessageProcessor } from '@/processing/MessageProcessor'; // Added
 import { IMessageNode } from '@/types/message'; // Removed unused IWarning import
 import { ResponseManager } from '@/discord/ResponseManager'; // Added for response handling
+import { IMemoryManager, IMemoryStorageAdapter, IMemory } from '@/types/memory'; // Added Memory types
+import { MemoryManager } from '@/memory/MemoryManager'; // Added MemoryManager
+import { SQLiteMemoryAdapter } from '@/memory/storage/SQLiteMemoryAdapter'; // Added Adapter
 
-// Placeholder imports for future components
-// import { ProviderManager } from '../providers/providerManager';
-// import { MemoryManager } from '../memory/memoryManager';
-// import { ReasoningManager } from '../reasoning/reasoningManager';
+// Removed old placeholders
 
 /**
  * The main class for the LLMcordTS Discord bot.
@@ -70,8 +70,10 @@ export class LLMCordBot {
   public providerFactory!: ProviderFactory;
   /** The primary LLM provider instance. Initialized in `initialize()`. */
   public llmProvider!: BaseProvider;
-  /** Handles persistent user memory storage (if enabled). Initialized in `initialize()`. */
-  public memoryStorage: SQLiteMemoryStorage | null = null;
+  /** Handles persistent user memory storage via an adapter (if enabled). Initialized in `initialize()`. */
+  public memoryStorage: IMemoryStorageAdapter | null = null; // Use Adapter interface
+  /** Manages memory fetching, formatting, and suggestion processing. Initialized in `initialize()`. */
+  public memoryManager: IMemoryManager | null = null; // Added MemoryManager property
   /** Manages multi-model reasoning logic (if enabled). Initialized in `initialize()`. */
   public reasoningManager: ReasoningManager | null = null;
   /** Handles memory-related commands (if memory enabled). Initialized in `initialize()`. */
@@ -179,35 +181,45 @@ export class LLMCordBot {
     // 3.5 Initialize Memory Storage (if enabled)
     if (this.config.memory.enabled) {
       try {
-        // Instantiate SQLiteMemoryStorage with path from config and logger
+        // Instantiate SQLiteMemoryAdapter with path from config and logger
         const dbPath = this.config.memory?.sqlite?.path;
         if (!dbPath) {
-          throw new Error(
-            'SQLite database path is not defined in the configuration (memory.sqlite.path).',
-          );
+            throw new Error(
+                'SQLite database path is not defined in the configuration (memory.sqlite.path).',
+            );
         }
-        // Pass config and providerFactory to the constructor
-        this.memoryStorage = new SQLiteMemoryStorage(
-          dbPath,
-          this.logger,
-          this.config,
-          this.providerFactory,
+        // Instantiate the Adapter
+        const adapter = new SQLiteMemoryAdapter(dbPath, this.logger);
+        // Initialize the adapter's schema (awaiting is safer if manager depends on it)
+        await adapter.initialize();
+        this.memoryStorage = adapter; // Assign only after successful init
+
+        // Instantiate the MemoryManager, passing the successfully initialized adapter
+        this.memoryManager = new MemoryManager(
+            this.memoryStorage, // Now guaranteed to be non-null here
+            this.config,
+            this.logger,
         );
-        this.logger.info('Memory storage initialized.');
+        this.logger.info('Memory storage adapter and manager initialized.');
         // TODO: Consider if config or llmProvider are needed later for persistence logic
       } catch (error) {
-        this.logger.error('Failed to initialize memory storage:', error);
-        this.memoryStorage = null;
+        this.logger.error('Failed to initialize memory storage adapter or manager:', error);
+        this.memoryStorage = null; // Set to null on error
+        this.memoryManager = null; // Set manager to null on error too
       }
 
       // Initialize Memory Command Handler (only if storage was successful)
       if (this.memoryStorage) {
         try {
-          // Pass the successfully initialized memoryStorage and the root logger
+          // Pass the MemoryManager instance to the command handler
+          // (Assuming MemoryCommandHandler is updated or can work with IMemoryManager)
+          if (!this.memoryManager) {
+             throw new Error("Memory Manager failed to initialize before Command Handler");
+          }
           this.memoryCommandHandler = new MemoryCommandHandler(
-            this.memoryStorage,
+            this.memoryManager, // Pass the manager instance
             this.logger,
-          ); // Removed config argument
+          );
           this.logger.info('Memory command handler initialized.');
         } catch (error) {
           this.logger.error(
@@ -224,7 +236,8 @@ export class LLMCordBot {
       }
     } else {
       this.logger.info('Memory storage is disabled in configuration.');
-      this.memoryStorage = null; // Ensure storage is null if disabled
+      this.memoryStorage = null; // Ensure storage adapter is null if disabled
+      this.memoryManager = null; // Ensure manager is null if disabled
       this.memoryCommandHandler = null; // Ensure handler is null if disabled
     }
 
@@ -318,7 +331,10 @@ export class LLMCordBot {
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Close database connection if memory storage exists
-      this.memoryStorage?.close();
+      // Close database connection if memory storage exists and has a close method
+      if (this.memoryStorage && typeof this.memoryStorage.close === 'function') {
+        this.memoryStorage.close();
+      }
 
       // Destroy the client connection
       this.client.destroy();
@@ -334,134 +350,8 @@ export class LLMCordBot {
     }
   }
 
-  /**
-   * Processes memory update suggestions (e.g., [MEM_APPEND], [MEM_REPLACE]) found in LLM responses.
-   * Updates memory storage and optionally strips tags from the response based on configuration.
-   * @param userId - The ID of the user whose memory should be updated.
-   * @param responseText - The full response text from the LLM.
-   * @param messageId - The ID of the original Discord message for logging context.
-   * @returns The response text, potentially with memory tags stripped.
-   * @private
-   */
-  private _processMemorySuggestions(
-    userId: string,
-    responseText: string,
-    messageId: string,
-  ): string {
-    let processedResponse = responseText; // Start with the original response
-
-    if (this.memoryStorage && this.config.memory.enabled) {
-      const suggestionsConfig = this.config.memory.suggestions;
-
-      // Get marker config with defaults
-      const appendStart =
-        suggestionsConfig?.appendMarkerStart ?? '[MEM_APPEND]';
-      const appendEnd = suggestionsConfig?.appendMarkerEnd ?? '[/MEM_APPEND]';
-      const replaceStart =
-        suggestionsConfig?.replaceMarkerStart ?? '[MEM_REPLACE]';
-      const replaceEnd =
-        suggestionsConfig?.replaceMarkerEnd ?? '[/MEM_REPLACE]';
-      const stripTags = suggestionsConfig?.stripFromResponse ?? true; // Default to stripping
-
-      // Escape markers for regex
-      const escapeRegex = (s: string) =>
-        s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-      const appendStartEsc = escapeRegex(appendStart);
-      const appendEndEsc = escapeRegex(appendEnd);
-      const replaceStartEsc = escapeRegex(replaceStart);
-      const replaceEndEsc = escapeRegex(replaceEnd);
-
-      // Build regex patterns
-      const appendRegex = new RegExp(
-        `${appendStartEsc}([\\s\\S]*?)${appendEndEsc}`,
-        'gi',
-      );
-      const replaceRegex = new RegExp(
-        `${replaceStartEsc}([\\s\\S]*?)${replaceEndEsc}`,
-        'gi',
-      );
-
-      // Use responseText for matching
-      const appendMatches = [...responseText.matchAll(appendRegex)];
-      const replaceMatches = [...responseText.matchAll(replaceRegex)];
-
-      let tagsProcessed = false;
-
-      if (replaceMatches.length > 0) {
-        tagsProcessed = true;
-        const replaceContent = replaceMatches
-          .map((match) => match[1]) // Get content within tags
-          .filter((content): content is string => content !== undefined)
-          .map((content) => content.trim())
-          .join('\n')
-          .trim(); // Use literal newline
-        // Log immediately if replace tags were found
-        this.logger.info(
-          `[${messageId}] Found memory replace suggestion for user ${userId}.`,
-        );
-        if (replaceContent) {
-          this.memoryStorage.setMemory(userId, replaceContent); // Use setMemory
-        }
-      } else if (appendMatches.length > 0) {
-        // Only process append if replace wasn't found
-        tagsProcessed = true;
-        const appendContent = appendMatches
-          .map((match) => match[1]) // Get content within tags
-          .filter((content): content is string => content !== undefined)
-          .map((content) => content.trim())
-          .join('\n')
-          .trim(); // Use literal newline
-        // Log immediately if append tags were found
-        this.logger.info(
-          `[${messageId}] Found memory append suggestion for user ${userId}.`,
-        );
-        if (appendContent) {
-          this.memoryStorage.appendMemory(userId, appendContent); // Run async
-        }
-      }
-
-      // Strip tags if configured and if any tags were actually processed
-      if (stripTags && tagsProcessed) {
-        // Regex to match tags possibly surrounded by whitespace
-        const combinedStripRegexWithSpace = new RegExp(
-          `\\s*(?:${appendStartEsc}[\\s\\S]*?${appendEndEsc}|${replaceStartEsc}[\\s\\S]*?${replaceEndEsc})\\s*`,
-          'gi',
-        );
-        // Replace tags and surrounding space with a single space to avoid joining words
-        processedResponse = processedResponse.replace(
-          combinedStripRegexWithSpace,
-          ' ',
-        );
-        // Collapse multiple spaces into one and trim ends
-        processedResponse = processedResponse.replace(/\s{2,}/g, ' ').trim();
-        this.logger.debug(
-          `[${messageId}] Stripped memory suggestion tags from final response.`,
-        );
-      } else if (tagsProcessed) {
-        this.logger.debug(
-          `[${messageId}] Memory suggestion tags processed but configured not to strip.`,
-        );
-      }
-    }
-
-    return processedResponse;
-  }
-  /**
-   * Formats the user's memory content for inclusion in the system prompt.
-   * @param memoryContent - The raw memory string, or null if none exists.
-   * @returns A formatted string block for the system prompt.
-   * @private
-   */
-  private _formatMemoryForSystemPrompt(memoryContent: string | null): string {
-    if (memoryContent && memoryContent.trim()) {
-      // Escape potential markdown issues if memory contains ``` etc.
-      // Basic escaping for backticks for now. More robust escaping might be needed.
-      const escapedContent = memoryContent.replace(/```/g, '\\`\\`\\`');
-      return `\n\n--- User Memory ---\n${escapedContent}\n--- End Memory ---`;
-    } else {
-      return '\n\n--- User Memory ---\nYou have no memories of the user.\n--- End Memory ---'; // Changed default text
-    }
-  }
+// Removed _processMemorySuggestions method (logic moved to MemoryManager)
+// Removed _formatMemoryForSystemPrompt method (logic moved to MemoryManager)
 
   /**
    * Formats the user's memory content for inclusion in the message history.
@@ -512,23 +402,26 @@ export class LLMCordBot {
     const { history, warnings: userWarnings } = await this.messageProcessor.buildMessageHistory(message); // Updated call and return type handling
     messageLogger.debug(`History built. Length: ${history.length}, Warnings: ${userWarnings.length}`);
 
-    // --- Fetch User Memory (Consolidated) ---
+    // --- Fetch User Memory (using MemoryManager) ---
     const userId = message.author.id;
-    let userMemoryContent: string | null = null;
-    if (this.config.memory.enabled && this.memoryStorage) {
-      try {
-        userMemoryContent = await this.memoryStorage.getMemory(userId);
-        messageLogger.debug(
-          `Fetched memory for user ${userId}. Length: ${userMemoryContent?.length ?? 0}`,
-        );
-      } catch (memError) {
-        messageLogger.error(
-          `Failed to retrieve memory for user ${userId}:`,
-          memError,
-        );
-        // Add warning as an IWarning object
-        userWarnings.push({ type: 'Generic', message: '⚠️ Failed to load user memory' });
-      }
+    let userMemories: IMemory[] = []; // Initialize as empty array
+    if (this.config.memory.enabled && this.memoryManager) {
+        try {
+            userMemories = await this.memoryManager.getUserMemory(userId);
+            messageLogger.debug(
+                `Fetched ${userMemories.length} memory items for user ${userId}.`,
+            );
+        } catch (memError) {
+            messageLogger.error(
+                `Failed to retrieve memory for user ${userId}:`,
+                memError,
+            );
+            // Add warning as an IWarning object
+            userWarnings.push({ type: 'Generic', message: '⚠️ Failed to load user memory' });
+        }
+    } else if (this.config.memory.enabled) {
+         messageLogger.warn(`Memory is enabled but MemoryManager is not available.`);
+         userWarnings.push({ type: 'Generic', message: '⚠️ Memory configured but manager unavailable.' });
     }
 
     // --- REMOVED Memory Injection into History ---
@@ -578,11 +471,15 @@ export class LLMCordBot {
       this.config.llm?.defaultSystemPrompt ??
       'You are LLMCord, a helpful Discord bot.';
 
-    // --- Format Memory Separately ---
-    const formattedMemoryForPrompt = this.config.memory.enabled
-      ? this._formatMemoryForSystemPrompt(userMemoryContent)
-      : ''; // Don't include memory prompt section if disabled
-    this.logger.debug(`[${message.id}] Formatted memory for prompt.`);
+    // --- Format System Prompt with Memory (using MemoryManager) ---
+    let systemPromptWithMemory = baseSystemPromptText; // Start with base
+    if (this.config.memory.enabled && this.memoryManager) {
+        // Pass the base prompt and the fetched memories array
+        systemPromptWithMemory = this.memoryManager.formatSystemPrompt(baseSystemPromptText, userMemories);
+        messageLogger.debug(`[${message.id}] Formatted system prompt with memory.`);
+    } else {
+         messageLogger.debug(`[${message.id}] Memory disabled or manager unavailable, using base system prompt.`);
+    }
 
     // --- Prepare Instructions ---
     let instructions = '';
@@ -717,9 +614,7 @@ export class LLMCordBot {
       messageLogger.debug(
         `Base system prompt from config: ${baseSystemPromptText ? `'${baseSystemPromptText.substring(0, 50)}...'` : 'undefined'}`,
       );
-      messageLogger.debug(
-        `Formatted memory for prompt: ${formattedMemoryForPrompt ? `'${formattedMemoryForPrompt.substring(0, 100)}...'` : 'None'}`,
-      );
+      // Removed log line referencing non-existent variable formattedMemoryForPrompt
       messageLogger.debug(
         `Instructions: ${instructions ? `'${instructions.substring(0, 100)}...'` : 'None'}`,
       );
@@ -731,11 +626,8 @@ export class LLMCordBot {
 
       if (providerSupportsSystem) {
         // Combine all parts for the system prompt argument
-        finalSystemPrompt = (
-          baseSystemPromptText +
-          formattedMemoryForPrompt +
-          instructions
-        ).trim();
+        // Use the potentially memory-enhanced system prompt
+        finalSystemPrompt = (systemPromptWithMemory + instructions).trim();
         messageLogger.debug(
           `Passing history and combined system prompt to generateStream. SystemPrompt: ${finalSystemPrompt ? `'${finalSystemPrompt.substring(0, 100)}...'` : 'undefined'}`,
         );
@@ -750,11 +642,8 @@ export class LLMCordBot {
         messageLogger.debug(
           `Provider does not support system role. Prepending prompt, memory, and instructions to first user message.`,
         );
-        const combinedPrefix = (
-          baseSystemPromptText +
-          formattedMemoryForPrompt +
-          instructions
-        ).trim();
+        // Use the potentially memory-enhanced system prompt
+        const combinedPrefix = (systemPromptWithMemory + instructions).trim();
         const userMessageIndex = historyToUse.findIndex(
           (msg) => msg.role === 'user',
         );
@@ -890,7 +779,7 @@ export class LLMCordBot {
               messageLogger.debug(`Passing history and system prompt for second call.`);
             } else {
               messageLogger.debug(`Prepending combined prompt for second call.`);
-              const combinedPrefix = (baseSystemPromptText + formattedMemoryForPrompt + instructions).trim();
+              const combinedPrefix = (systemPromptWithMemory + instructions).trim(); // Use potentially memory-enhanced prompt
               const userMessageIndex = secondHistory.findIndex((msg) => msg.role === 'user');
               if (userMessageIndex !== -1 && combinedPrefix) {
                 const userMessage = secondHistory[userMessageIndex];
@@ -1071,19 +960,24 @@ export class LLMCordBot {
 
       // --- Process Memory Tags *after* all streams and reasoning ---
       // Use the potentially updated finalResponseToUser from reasoning
-      const finalResponseText = finalResponseToUser || accumulatedResponse; // Use reasoning result if available
-      messageLogger.debug( 'Text before processing memory suggestions',{ responseText: finalResponseText },);
-      this._processMemorySuggestions(
-        userId,
-        finalResponseText, // Process tags on the final text
-        message.id,
-      );
-      // Note: Tags are processed for storage but NOT stripped from the already sent response here.
+      const finalResponseText = finalResponseToUser || accumulatedResponse; // Use reasoning result if available, otherwise the direct LLM response
+      messageLogger.debug( 'Final response text before memory suggestion processing',{ responseText: finalResponseText },);
+
+      // Process memory suggestions using MemoryManager (runs async, fire-and-forget for now)
+      if (this.config.memory.enabled && this.memoryManager) {
+          this.memoryManager.processMemorySuggestions(userId, finalResponseText, message.id)
+              .catch(err => {
+                  // Log error from suggestion processing but don't block finalizing the response
+                  messageLogger.error(`Error during background memory suggestion processing:`, err);
+              });
+      }
+      // Note: Tag stripping from the final response is NOT handled here anymore.
+      // If needed, it should be part of ResponseManager or handled before finalize.
 
       // --- Placeholder: Reasoning Logic ---
       if (this.reasoningManager?.isEnabled() && finalResponseToUser) {
         const userId = message.author.id;
-        // Use finalResponseToUser which has memory tags removed
+        // Use finalResponseToUser (which should NOT have memory tags stripped here anymore)
         if (this.reasoningManager.checkResponseForSignal(finalResponseToUser)) {
           if (!this.reasoningManager.checkRateLimit(userId)) {
             const signal =
