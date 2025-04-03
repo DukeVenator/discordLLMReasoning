@@ -221,7 +221,7 @@ describe('ResponseManager', () => {
           embeds: expect.arrayContaining([
             expect.objectContaining({
               description: 'Final chunk', // No indicator
-              color: 0x00ff00, // Green color
+              color: 0x28A745, // Darker green color
             }),
           ]),
         }),
@@ -278,7 +278,7 @@ describe('ResponseManager', () => {
           embeds: expect.arrayContaining([
             expect.objectContaining({
               description: 'Chunk 1 Chunk 2',
-              color: 0x00ff00,
+              color: 0x28A745,
             }),
           ]),
         }),
@@ -314,7 +314,7 @@ describe('ResponseManager', () => {
           embeds: expect.arrayContaining([
             expect.objectContaining({
               description: 'Some content', // Content from previous update
-              color: 0x00ff00, // Final color
+              color: 0x28A745, // Final color
             }),
           ]),
         }),
@@ -378,7 +378,7 @@ describe('ResponseManager', () => {
           expect.objectContaining({
             // Description should be the original content + truncated chunk
             description: 'A'.repeat(1950) + expectedTruncatedChunk,
-            color: 0x00ff00, // Final color
+            color: 0x28A745, // Final color
           }),
         ]),
       }),
@@ -414,7 +414,7 @@ describe('ResponseManager', () => {
         embeds: expect.arrayContaining([
           expect.objectContaining({
             description: 'A'.repeat(1900) + expectedMsg1Chunk, // Truncated content for msg 1
-            color: 0x00ff00, // Final color for this message part
+            color: 0x28A745, // Final color for this message part
           }),
         ]),
       }),
@@ -439,7 +439,7 @@ describe('ResponseManager', () => {
         embeds: expect.arrayContaining([
           expect.objectContaining({
             description: remainingContent, // Remaining content for msg 2
-            color: 0x00ff00, // Final color overall
+            color: 0x28A745, // Final color overall
           }),
         ]),
       }),

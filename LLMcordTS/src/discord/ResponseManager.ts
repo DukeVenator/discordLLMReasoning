@@ -357,13 +357,13 @@ export class ResponseManager implements IResponseManager {
             : fullContentForThisMessage;
         const descriptionText = this._formatContent(truncatedContent || (isFinalSegment ? '' : '...'));
         const finalDescription = isFinalSegment ? descriptionText : `${descriptionText} ⚪`;
-        const finalColor = isFinalSegment ? 0x00ff00 : 0xffa500;
+        const finalColor = isFinalSegment ? 0x28A745 : 0xffa500; // Darker green for final
 
         if (isFinalSegment && !descriptionText.trim()) {
             this.logger.debug(`Creating final empty payload.`);
             return this.usePlainResponses
                 ? { content: '✅' }
-                : { embeds: [new EmbedBuilder().setDescription('✅').setColor(0x00ff00)] };
+                : { embeds: [new EmbedBuilder().setDescription('✅').setColor(0x28A745)] }; // Darker green for final check
         } else {
             return this.usePlainResponses
                 ? { content: descriptionText || '...' }
