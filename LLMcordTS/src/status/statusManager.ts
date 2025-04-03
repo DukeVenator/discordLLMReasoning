@@ -80,7 +80,7 @@ export class StatusManager {
         logger.info('Starting status cycling...');
         this.currentIndex = 0;
         const initialStatus = this.getCurrentStatusString();
-        this.setActivity(initialStatus);
+        this.setActivity(initialStatus, ActivityType.Playing, 'online'); // Explicitly set initial status to online
 
         if (this.statuses.length > 1 && this.intervalSeconds > 0) {
             this.intervalTimer = setInterval(() => {
@@ -143,6 +143,7 @@ export class StatusManager {
         // Ensure text is never undefined/null before sending to Discord API
         const activityText = text ?? FALLBACK_STATUS;
         try {
+            logger.info(`[StatusManager] Attempting to set presence: text='${activityText}', type=${type}, status='${status}'`); // Log the intended status
             await this.client.user.setPresence({
                 activities: [{ name: activityText, type }],
                 status: status,
