@@ -283,24 +283,37 @@ export class MessageProcessor /* implements IMessageProcessor - Temporarily remo
                     `[History] Formatted node ${messageId} as multimodal (${imagesToSend.length} images)`,
                 );
             } else {
-                // No images or provider doesn't support vision
-                if (prefixedTextToSend) {
-                    apiContent = prefixedTextToSend;
-                } else if (
-                    node.role === 'assistant' &&
-                    currentMessage?.embeds[0]?.description
-                ) {
-                    // If assistant message text is empty, try using the first embed's description
-                    const embedText = currentMessage.embeds[0].description.substring(
-                        0,
-                        maxTextLength,
-                    );
-                    apiContent = embedText; // Use embed description as content
-                    this.logger.debug(
-                        `[History] Using embed description for assistant node ${messageId}`,
-                    );
-                } else {
-                    apiContent = ''; // Ensure it's an empty string if no text or embed description
+                // Text-only logic
+                const thinkingPlaceholder = '🧠 Thinking...'; // CORRECT Placeholder used by ResponseManager
+                const embedDescription = currentMessage?.embeds[0]?.description?.substring(0, maxTextLength);
+
+                if (node.role === 'assistant') {
+                    if (prefixedTextToSend === thinkingPlaceholder) {
+                        // If text is the placeholder, prioritize embed description
+                        if (embedDescription) {
+                            apiContent = embedDescription;
+                            this.logger.debug(`[History] Using embed description for assistant placeholder node ${messageId}`);
+                        } else {
+                            apiContent = ''; // Use empty string if placeholder found but no embed description
+                            this.logger.debug(`[History] Assistant placeholder node ${messageId} found, but no embed description. Using empty content.`);
+                        }
+                    } else if (prefixedTextToSend) {
+                        // If text is not the placeholder, use the text
+                        apiContent = prefixedTextToSend;
+                    } else if (embedDescription) {
+                        // If no text content at all, fall back to embed description
+                        apiContent = embedDescription;
+                        this.logger.debug(`[History] Using embed description for assistant node ${messageId} (no text content)`);
+                    } else {
+                        // No text, no placeholder, no embed description
+                        apiContent = '';
+                    }
+                } else { // node.role === 'user'
+                    if (prefixedTextToSend) {
+                        apiContent = prefixedTextToSend;
+                    } else {
+                        apiContent = ''; // User message with no text content
+                    }
                 }
             }
 
