@@ -10,7 +10,7 @@ graph TD
         UI[Discord Client]
     end
 
-    subgraph Bot Backend (LLMcordTS)
+    subgraph "Bot Backend (LLMcordTS)"
         A[Discord Gateway Listener] --> B(Event Handlers);
         B --> C{Interaction Router};
         C -- Command --> D[Slash Command Handler];

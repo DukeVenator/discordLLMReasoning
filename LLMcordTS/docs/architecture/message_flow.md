@@ -10,14 +10,14 @@ This document explains the typical journey of a user interaction (like a slash c
 sequenceDiagram
     participant User
     participant DiscordGateway
-    participant EventHandler (discord/eventHandlers.ts)
-    participant SlashHandler (discord/slashCommandHandler.ts)
-    participant MsgProcessor (processing/MessageProcessor.ts)
-    participant CmdHandler (commands/handlers/*)
-    participant LLMProvider (providers/*)
-    participant MemoryMgr (memory/MemoryManager.ts)
-    participant ToolRegistry (core/toolRegistry.ts)
-    participant ResponseMgr (discord/ResponseManager.ts)
+    participant EventHandler
+    participant SlashHandler
+    participant MsgProcessor
+    participant CmdHandler
+    participant LLMProvider
+    participant MemoryMgr
+    participant ToolRegistry
+    participant ResponseMgr
 
     User->>DiscordGateway: Sends Slash Command / Message
     DiscordGateway->>EventHandler: InteractionCreate / MessageCreate Event
